@@ -1,0 +1,13 @@
+diff --git a/shardy/integrations/python/jax/mpmd/jit.py b/shardy/integrations/python/jax/mpmd/jit.py
+index 4bc1ce0..e30a718 100644
+--- a/shardy/integrations/python/jax/mpmd/jit.py
++++ b/shardy/integrations/python/jax/mpmd/jit.py
+@@ -26,7 +26,7 @@ from jax.interpreters import mlir
+ from jaxlib import _sdy_mpmd as jaxlib_mpmd
+ from jaxlib import xla_client
+ import jaxtyping
+-from mlir import ir
++from jax.extend.mlir import ir
+ import numpy as np
+ import typing_extensions
+ 
