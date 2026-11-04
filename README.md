@@ -20,11 +20,16 @@ IFRT IR interpreter on the ROCm PJRT plugin, without Pathways.
   with the Llama 3 tokenizer, and throughput and MFU reporting.
 - Checks against single-mesh `jax.jit`: the MPMD pipeline step matches it in
   loss and parameters.
+- A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
+  same model, weights and batches as one `jax.jit` program on all devices.
 
 First result on 8x AMD Instinct MI355X: Llama 3.1 8B with 2 pipeline stages of
 4 GPUs, the 1F1B schedule and 65,536 tokens per step trained at 2.20 s per step
-(29.8k tokens/s, 7.0% MFU). Loss fell from 12.6 to 6.35 in 100 steps. See
-[docs/getting_started.md](docs/getting_started.md).
+(29.8k tokens/s, 7.0% MFU). Without the pipeline, the same step as one
+`jax.jit` program takes 0.83 s with data parallelism and 0.80 s with FSDP, so
+on one node the pipeline is 2.6-2.7x slower.
+[docs/getting_started.md](docs/getting_started.md) has the full comparison,
+the reasons for the gap and the first fix.
 
 ```python
 from jaxtitan import mpmd as jt_mpmd

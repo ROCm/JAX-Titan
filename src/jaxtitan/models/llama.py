@@ -5,6 +5,7 @@ Architecture and flavors follow MaxText's `decoder_block: llama2` and its
 and a SwiGLU MLP.
 """
 
+from collections.abc import Sequence
 import dataclasses
 import functools
 
@@ -84,6 +85,18 @@ def init_stage_params(
     params["final_norm"] = jnp.ones((e,), jnp.float32)
     params["lm_head"] = _normal(ks[8], (e, cfg.vocab_size), 0.02)
   return params
+
+
+def merge_stage_params(stage_params: Sequence[dict]) -> dict:
+  """Joins per-stage parameters into the parameters of a one-stage model."""
+  return {
+      "layers": jax.tree.map(
+          lambda *xs: jnp.concatenate(xs), *(p["layers"] for p in stage_params)
+      ),
+      "embed": stage_params[0]["embed"],
+      "final_norm": stage_params[-1]["final_norm"],
+      "lm_head": stage_params[-1]["lm_head"],
+  }
 
 
 def _rope(x: jax.Array, theta: float) -> jax.Array:
