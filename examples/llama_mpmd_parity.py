@@ -18,6 +18,7 @@ def main():
   parser.add_argument("--platform", default="cpu", choices=["cpu", "rocm"])
   parser.add_argument("--schedule", default="ONE_FWD_ONE_BWD")
   parser.add_argument("--steps", type=int, default=4)
+  parser.add_argument("--reduce_grads", default="step", choices=["microbatch", "step"])
   args = parser.parse_args()
   if args.platform == "cpu":
     os.environ["JAX_PLATFORMS"] = "cpu"
@@ -97,8 +98,14 @@ def main():
   )
   tok_sh = NamedSharding(meshes[0], P(None, jt_mpmd.DATA_AXIS, None))
   tgt_sh = NamedSharding(meshes[-1], P(None, jt_mpmd.DATA_AXIS, None))
+  copy_axes = None
+  if args.reduce_grads == "step":
+    copy_axes = [llama.device_copy_axes(p) for p in host_params]
+  train_step = jt_mpmd.make_train_step(
+      stage_fns, optimizer, copy_axes=copy_axes, mesh=meshes[0]
+  )
   compiled = mpmd.jit(
-      jt_mpmd.make_train_step(stage_fns, optimizer), config,
+      train_step, config,
       in_shardings=(param_sh, opt_sh, tok_sh, tgt_sh),
       out_shardings=(param_sh, opt_sh, NamedSharding(meshes[-1], P())),
   ).lower(host_params, host_opt, batches[0][..., :-1], batches[0][..., 1:]).compile()
@@ -117,7 +124,10 @@ def main():
   for a, b in zip(jax.tree.leaves(jax.device_get(mpmd_params)),
                   jax.tree.leaves(jax.device_get(ref_params))):
     np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
-  print(f"MPMD pipeline ({args.schedule}) matches the single-mesh reference")
+  print(
+      f"MPMD pipeline ({args.schedule}, gradients reduced per "
+      f"{args.reduce_grads}) matches the single-mesh reference"
+  )
   return 0
 
 

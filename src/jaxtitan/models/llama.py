@@ -87,6 +87,15 @@ def init_stage_params(
   return params
 
 
+def device_copy_axes(params: dict) -> dict:
+  """Axes to stack per-device parameter copies along, one per leaf.
+
+  Layer weights take axis 1, after the layer axis, where `lax.scan` batches
+  its inputs; other weights take axis 0.
+  """
+  return {k: jax.tree.map(lambda _, k=k: int(k == "layers"), v) for k, v in params.items()}
+
+
 def merge_stage_params(stage_params: Sequence[dict]) -> dict:
   """Joins per-stage parameters into the parameters of a one-stage model."""
   return {

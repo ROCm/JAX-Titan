@@ -36,6 +36,12 @@ def parse_args(argv=None):
       "--schedule", default="ONE_FWD_ONE_BWD",
       help="Shardy pipeline schedule name, or empty for the default order.",
   )
+  parser.add_argument(
+      "--reduce_grads", default="step", choices=["microbatch", "step"],
+      help="When mpmd stages sum gradients across their devices: in every "
+      "microbatch's backward pass, or once per step from per-device "
+      "parameter copies.",
+  )
   parser.add_argument("--microbatches", type=int, default=8)
   parser.add_argument(
       "--microbatch_size", type=int, default=4,
@@ -92,11 +98,12 @@ def _build_mpmd(args, cfg, devices, optimizer):
   def constrain(h):
     return jax.lax.with_sharding_constraint(h, activation_sharding)
 
+  per_step = args.reduce_grads == "step"
   stage_fns = []
   for i in range(num_stages):
     fn = functools.partial(
         llama.stage_forward, cfg=cfg, stage=i, num_stages=num_stages,
-        remat=args.remat, constrain=constrain,
+        remat=args.remat, constrain=None if per_step else constrain,
     )
     if i < num_stages - 1:
       stage_fns.append(functools.partial(lambda f, p, x: f(p, x, None), fn))
@@ -128,8 +135,12 @@ def _build_mpmd(args, cfg, devices, optimizer):
   target_sharding = NamedSharding(meshes[-1], P(None, jt_mpmd.DATA_AXIS, None))
   loss_sharding = NamedSharding(meshes[-1], P())
 
+  train_step = jt_mpmd.make_train_step(
+      stage_fns, optimizer, mesh=meshes[0],
+      copy_axes=[llama.device_copy_axes(p) for p in params] if per_step else None,
+  )
   jitted = mpmd.jit(
-      jt_mpmd.make_train_step(stage_fns, optimizer),
+      train_step,
       config,
       in_shardings=(param_shardings, opt_shardings, token_sharding, target_sharding),
       out_shardings=(param_shardings, opt_shardings, loss_sharding),
@@ -238,7 +249,10 @@ def main(argv=None):
   cfg = llama.FLAVORS[args.model]
   devices = jax.devices()
   if args.parallel == "mpmd":
-    layout = f"{args.num_stages} stages | schedule={args.schedule or 'default'}"
+    layout = (
+        f"{args.num_stages} stages | schedule={args.schedule or 'default'} | "
+        f"gradients reduced per {args.reduce_grads}"
+    )
   else:
     layout = f"{args.parallel} over {len(devices)} devices, no pipeline"
   print(
