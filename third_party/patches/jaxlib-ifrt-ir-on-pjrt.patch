@@ -1,0 +1,97 @@
+diff --git a/jaxlib/BUILD b/jaxlib/BUILD
+index bf8a4fb7f0..1bca691a0a 100644
+--- a/jaxlib/BUILD
++++ b/jaxlib/BUILD
+@@ -1511,6 +1511,7 @@ nanobind_pywrap_extension(
+         "@com_google_absl//absl/status:status_macros",
+         "@com_google_absl//absl/status:statusor",
+         "@com_google_absl//absl/strings:string_view",
++        "@com_google_absl//absl/synchronization",
+         "@com_google_absl//absl/types:span",
+         "@llvm-project//llvm:Support",
+         "@llvm-project//mlir:CAPIIRHeaders",
+@@ -1534,6 +1535,9 @@ nanobind_pywrap_extension(
+         "@xla//xla/python/ifrt:user_context",
+         "@xla//xla/python/ifrt/ir:ifrt_ir_program",
+         "@xla//xla/python/ifrt/ir:program_memory_tracer",
++        "@xla//xla/python/ifrt/ir/compilation:atom_program_compiler",
++        "@xla//xla/python/ifrt/ir/compilation:basic_atom_program_compiler",
++        "@xla//xla/python/ifrt/ir/compilation:compiler",
+         "@xla//xla/python/ifrt/ir/conversions/mpmd:lower_to_ifrt",
+         "@xla//xla/python/pjrt_ifrt:xla_ifrt",
+         "@xla//xla/tsl/platform:statusor",
+diff --git a/jaxlib/sdy_mpmd.cc b/jaxlib/sdy_mpmd.cc
+index 7213cf18cd..6058a6a66f 100644
+--- a/jaxlib/sdy_mpmd.cc
++++ b/jaxlib/sdy_mpmd.cc
+@@ -28,6 +28,7 @@ limitations under the License.
+ #include "absl/status/status.h"
+ #include "absl/status/status_macros.h"
+ #include "absl/status/statusor.h"
++#include "absl/synchronization/mutex.h"
+ #include "mlir-c/IR.h"
+ #include "mlir/Bindings/Python/IRCore.h"
+ #include "mlir/CAPI/IR.h"  // IWYU pragma: keep; Needed to allow MlirModule -> ModuleOp.
+@@ -62,6 +63,9 @@ limitations under the License.
+ #include "xla/python/ifrt/device.h"
+ #include "xla/python/ifrt/device_list.h"
+ #include "xla/python/ifrt/executable.h"
++#include "xla/python/ifrt/ir/compilation/atom_program_compiler.h"
++#include "xla/python/ifrt/ir/compilation/basic_atom_program_compiler.h"
++#include "xla/python/ifrt/ir/compilation/compiler.h"
+ #include "xla/python/ifrt/ir/conversions/mpmd/lower_to_ifrt.h"
+ #include "xla/python/ifrt/ir/ifrt_ir_program.h"
+ #include "xla/python/ifrt/ir/program_memory_tracer.h"
+@@ -151,6 +155,34 @@ absl::StatusOr<xla::ifrt::DeviceListRef> MakeDeviceListFromPyDevices(
+   return py_client->ifrt_client()->MakeDeviceList(unwrapped_devices);
+ }
+ 
++// PJRT-backed IFRT clients only compile HLO programs, so IFRT IR programs are
++// compiled with XLA's IFRT IR compiler, which compiles each atom program
++// through the client and runs the program with the IFRT IR interpreter. The
++// compiler must outlive in-flight compilations, so one is kept per client.
++xla::ifrt::Compiler* GetIfrtIrProgramCompiler(xla::ifrt::Client* client) {
++  if (client->runtime_type() != "pjrt_ifrt") {
++    return client->GetDefaultCompiler();
++  }
++  static absl::Mutex mu(absl::kConstInit);
++  static auto* compilers = new absl::flat_hash_map<
++      xla::ifrt::Client*, std::unique_ptr<xla::ifrt::IfrtIrProgramCompiler>>();
++  absl::MutexLock lock(mu);
++  std::unique_ptr<xla::ifrt::IfrtIrProgramCompiler>& compiler =
++      (*compilers)[client];
++  if (compiler == nullptr) {
++    compiler = std::make_unique<xla::ifrt::IfrtIrProgramCompiler>(
++        client,
++        [client](const xla::ifrt::IfrtIRCompileOptions& options)
++            -> absl::StatusOr<
++                std::unique_ptr<xla::ifrt::AtomProgramCompiler>> {
++          return xla::ifrt::BasicAtomProgramCompiler::Create(
++              client, options.device_assignments,
++              options.strict_memory_reservation);
++        });
++  }
++  return compiler.get();
++}
++
+ // Calls `Compiler::CompileAndLoad()` and returns
+ // `PyMpmdLoadedExecutable` for the compiled MPMD program.
+ //
+@@ -218,7 +250,7 @@ CompileMpmdWithLoadedHostCallbacks(
+     nb::gil_scoped_release gil_release;
+     ABSL_ASSIGN_OR_RETURN(
+         loaded_executable,
+-        client->GetDefaultCompiler()
++        GetIfrtIrProgramCompiler(client)
+             ->CompileAndLoad(std::make_unique<xla::ifrt::IfrtIRProgram>(
+                                  unwrap(c_module.get())),
+                              std::move(ifrt_compile_options))
+@@ -320,7 +352,7 @@ CompileMpmdWithCallableHostCallbacks(
+ NB_MODULE(_sdy_mpmd, m) {
+   nb::module_::import_(
+       "jaxlib._hlo");
+-  nb::module_::import_("jax.jaxlib._jax");
++  nb::module_::import_("jaxlib._jax");
+ 
+   nb::enum_<PartitioningPhase>(m, "PartitioningPhase", nb::is_flag())
+       .value("NONE", PartitioningPhase::kNone)
