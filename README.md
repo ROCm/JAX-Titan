@@ -14,17 +14,23 @@ IFRT IR interpreter on the ROCm PJRT plugin, without Pathways.
 
 - Single-controller Shardy MPMD execution on ROCm, with no Pathways service.
 - Pipeline parallelism with Shardy's schedules (`ONE_FWD_ONE_BWD`, `GPIPE`)
-  and microbatching, data parallelism inside each stage, and per-stage AdamW
-  state that stays on the stage's mesh.
+  and microbatching, data parallelism inside each stage with gradients summed
+  once per step, and per-stage AdamW state that stays on the stage's mesh.
 - Llama 3 models using MaxText's `llama3.1-8b` configuration, WikiText-103
   with the Llama 3 tokenizer, and throughput and MFU reporting.
 - Checks against single-mesh `jax.jit`: the MPMD pipeline step matches it in
   loss and parameters.
+- A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
+  same model, weights and batches as one `jax.jit` program on all devices.
 
-First result on 8x AMD Instinct MI355X: Llama 3.1 8B with 2 pipeline stages of
-4 GPUs, the 1F1B schedule and 65,536 tokens per step trained at 2.20 s per step
-(29.8k tokens/s, 7.0% MFU). Loss fell from 12.6 to 6.35 in 100 steps. See
-[docs/getting_started.md](docs/getting_started.md).
+On 8x AMD Instinct MI355X, Llama 3.1 8B with 2 pipeline stages of 4 GPUs, the
+1F1B schedule and 65,536 tokens per step trains at 1.70 s per step (38.6k
+tokens/s, 9.0% MFU), 1.3x faster than the first run because stages now reduce
+gradients once per step. Without the pipeline, the same step as one `jax.jit`
+program takes 0.83 s with data parallelism and 0.80 s with FSDP, so on one node
+the pipeline is still about 2x slower.
+[docs/getting_started.md](docs/getting_started.md) has the full comparison and
+the reasons for the gap.
 
 ```python
 from jaxtitan import mpmd as jt_mpmd

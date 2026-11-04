@@ -8,6 +8,7 @@ schedules can interleave forward and backward fragments across microbatches.
 from collections.abc import Callable, Sequence
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import optax
 from shardy.integrations.python.jax import mpmd
@@ -90,19 +91,83 @@ def pipeline_loss(
   return total / num_microbatches
 
 
+def _device_copies(params, axes, mesh: jax.sharding.Mesh):
+  """Stacks `params` once per device of `mesh` along `axes`, one copy each."""
+  n = mesh.shape[DATA_AXIS]
+
+  def copy(x, axis):
+    shape = x.shape[:axis] + (n,) + x.shape[axis:]
+    spec = jax.sharding.PartitionSpec(*([None] * axis + [DATA_AXIS]))
+    return jax.lax.with_sharding_constraint(
+        jnp.broadcast_to(jnp.expand_dims(x, axis), shape),
+        jax.sharding.NamedSharding(mesh, spec),
+    )
+
+  return jax.tree.map(copy, params, axes)
+
+
+def _per_device(fn: Callable[..., jax.Array], axes, n: int, last: bool):
+  """Runs `fn` on each device's parameter copy and share of the microbatch."""
+
+  def split(a):
+    return a.reshape(n, a.shape[0] // n, *a.shape[1:])
+
+  def per_device_fn(copies, x, *targets):
+    out = jax.vmap(fn, in_axes=(axes, 0) + (0,) * len(targets))(
+        copies, split(x), *map(split, targets)
+    )
+    return out.mean() if last else out.reshape(-1, *out.shape[2:])
+
+  return per_device_fn
+
+
 def make_train_step(
     stage_fns: Sequence[Callable[..., jax.Array]],
     optimizer: optax.GradientTransformation,
+    *,
+    copy_axes: Sequence | None = None,
+    mesh: jax.sharding.Mesh | None = None,
 ) -> Callable:
   """Returns `step(stage_params, opt_states, tokens, targets)`.
 
   Every stage keeps its own optimizer state, so gradient clipping is per stage.
+
+  By default a stage all-reduces its gradients across its devices in the
+  backward pass of every microbatch. With `copy_axes`, one pytree of axes per
+  stage, each device trains its own copy of the stage parameters stacked
+  along those axes: microbatch gradients stay on their device, and the stage
+  sums them across devices once per step. `stage_fns` then see one device's
+  share of a microbatch and must not constrain shardings.
+
+  `mesh` is any one stage mesh. `jax.jit` requires every sharding constraint
+  in a program to name the same devices; Shardy MPMD only uses its axes.
   """
+  if copy_axes is not None:
+    last = len(stage_fns) - 1
+    n = mesh.shape[DATA_AXIS]
+    device_fns = [
+        _per_device(fn, copy_axes[i], n, i == last) for i, fn in enumerate(stage_fns)
+    ]
+
+  def loss_and_grads(stage_params, tokens, targets):
+    if copy_axes is None:
+      return jax.value_and_grad(
+          lambda p: pipeline_loss(stage_fns, p, tokens, targets)
+      )(stage_params)
+    copies = [
+        _device_copies(p, copy_axes[i], mesh) for i, p in enumerate(stage_params)
+    ]
+    loss, copy_grads = jax.value_and_grad(
+        lambda c: pipeline_loss(device_fns, c, tokens, targets)
+    )(copies)
+    grads = [
+        jax.tree.map(lambda g, axis: g.sum(axis), g, copy_axes[i])
+        for i, g in enumerate(copy_grads)
+    ]
+    return loss, grads
 
   def train_step(stage_params, opt_states, tokens, targets):
-    loss, grads = jax.value_and_grad(
-        lambda p: pipeline_loss(stage_fns, p, tokens, targets)
-    )(stage_params)
+    loss, grads = loss_and_grads(stage_params, tokens, targets)
     new_params, new_states = [], []
     for params, grad, state in zip(stage_params, grads, opt_states):
       updates, state = optimizer.update(grad, state, params)
