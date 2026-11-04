@@ -76,4 +76,9 @@ container, the from-source JAX build and the Python environment.
 
 ## License
 
-Apache 2.0. 
+MIT, see [LICENSE](LICENSE). Two directories keep the Apache License 2.0:
+
+- `src/jaxpp/`: the original JaxPP project, with its own `LICENSE` and file
+  headers.
+- `third_party/patches/`: patches to jax, XLA and Shardy, which are Apache-2.0
+  projects. See [third_party/patches/README.md](third_party/patches/README.md).
