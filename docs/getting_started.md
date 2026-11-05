@@ -27,10 +27,11 @@ Create worktrees in `${JAXTITAN_ROOT}/src` and apply the patches from
 |---|---|---|
 | `jax` | jax-ml/jax main (`6b39d495e5` was tested) | `jaxlib-ifrt-ir-on-pjrt.patch` |
 | `xla` | openxla/xla main at or after `dfca2c9`, which has the ROCm IFRT IR fix ([#52290](https://github.com/openxla/xla/pull/52290); `d23c30982a` was tested) | none |
-| `shardy` | the commit pinned in that XLA's `third_party/shardy/workspace.bzl` (`b6b99997`) | `shardy-mpmd-oss-mlir-import.patch` |
+| `shardy` | the commit pinned in that XLA's `third_party/shardy/workspace.bzl` (`b6b99997`) | `shardy-mpmd-oss-mlir-import.patch`, `shardy-mpmd-parse-partitioning-options.patch` |
 
 jax's `MODULE.bazel` can pin an older XLA than the fix; the build script
-overrides it with the `xla` tree.
+overrides it with the `xla` tree, and the Shardy that XLA pins with the
+patched `shardy` tree.
 
 ## 3. Build
 

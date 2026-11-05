@@ -54,12 +54,14 @@ compiled = mpmd.jit(
 
 ## Requirements
 
-JAX-Titan needs two small patches on top of upstream, kept in
+JAX-Titan needs small patches to jaxlib and Shardy, kept in
 [third_party/patches](third_party/patches):
 
 - **jaxlib:** compile IFRT IR MPMD programs on PJRT-backed IFRT clients.
   Upstream jaxlib only compiles them through Pathways.
-- **Shardy MPMD JAX API:** an import fix for open-source builds.
+- **Shardy MPMD:** an import fix for open-source builds, and passing every
+  partitioning option to the partitioner (jaxlib dropped five, including the
+  one that keeps 1F1B in order).
 
 XLA needs no patch: ROCm support in the IFRT IR atom-program passes landed as
 [openxla/xla#52290](https://github.com/openxla/xla/pull/52290) (`dfca2c9`), so
