@@ -10,6 +10,12 @@ IFRT IR interpreter on the ROCm PJRT plugin, without Pathways.
 
 > **Status:** early development. APIs will change.
 
+## Architecture
+
+![JAX-Titan architecture: MaxText and MaxDiffusion reference models on a shared framework and pluggable operators, over Shardy MPMD and the JAX-Titan runtime, then IFRT, ROCm PJRT and XLA, then RCCL, MORI and AMD GPUs](docs/images/architecture.png)
+
+This is the target design; [What works](#what-works) lists what runs today.
+
 ## What works
 
 - Single-controller Shardy MPMD execution on ROCm, with no Pathways service.
@@ -52,6 +58,8 @@ JAX-Titan needs three small patches on top of upstream, kept in
 - **jaxlib:** compile IFRT IR MPMD programs on PJRT-backed IFRT clients.
   Upstream jaxlib only compiles them through Pathways.
 - **XLA:** accept the ROCm platform in the IFRT IR atom-program passes.
+  Upstream as [openxla/xla#52290](https://github.com/openxla/xla/pull/52290),
+  approved.
 - **Shardy MPMD JAX API:** an import fix for open-source builds.
 
 [docs/getting_started.md](docs/getting_started.md) covers the TheRock
