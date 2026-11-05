@@ -3,13 +3,14 @@
 ## Run Names and Files
 
 Name a run `{model}_{layout}_{schedule}[_{variant}]`, for example
-`llama3.1-8b_pp2_1f1b` or `llama3.1-8b_fsdp8`. Per run:
+`llama3.1-8b_pp2_zero-bubble_fsdp` or `llama3.1-8b_fsdp8`. Per run:
 
 | File | Content |
 |------|---------|
 | `${JAXTITAN_ROOT}/logs/<topic>/<run>.out` | stdout and stderr, including compile time and peak HBM |
 | `${JAXTITAN_ROOT}/logs/<topic>/<run>.jsonl` | `--log_file`: one record per step (loss, step time, tokens/s, MFU) |
-| `docs/results/<run>.jsonl` | Logs kept as evidence for a documented result |
+| `--profile_dir` | `jax.profiler` traces; summarize with `python -m jaxtitan.observability.profile DIR` |
+| `docs/results/<date>/<run>.jsonl` | Logs kept as evidence for a documented result |
 
 ## Per-Run Record
 
@@ -19,7 +20,7 @@ they match or the difference is the thing being measured:
 - commit of the repo, and the jax, XLA and Shardy revisions with their patches
 - the exact command, including `XLA_FLAGS`
 - model, tokens per step (microbatches x microbatch size x sequence length)
-- stages, schedule, gradient-reduction mode
+- stages, schedule, layout inside each stage, gradient-reduction mode
 - `--steps` (it sets the learning-rate decay) and `--seed`
 - median step time over steps 5 to N, tokens/s, MFU, peak HBM range, compile
   time, step-0 loss
@@ -36,7 +37,7 @@ a new session. Each entry:
 ## 2026-11-05 RCCL hang at step 0
 - Symptom: no step 0 after compile; rendezvous leader stuck in Initialize clique
 - Suspicion: another user's job started on the same GPUs
-- Evidence: two hung attempts while another user's job ran; the rerun on an idle node passed
+- Evidence: two hung attempts while root's minigpt_profile.py ran; the rerun on an idle node passed
 - Next check: none
 - Status: resolved (run only on an idle node)
 ```
@@ -57,8 +58,12 @@ Then follow the cleanup checklist in SKILL.md, keeping the logs.
 
 ## Measuring the Bubble
 
-Run the same layout with 4 and 8 microbatches at the same microbatch size.
-Step time is a fixed cost plus a per-microbatch time; the fixed cost holds
-the bubble and the once-per-step work, such as the gradient all-reduce and
-the optimizer update. With 2 stages, 1F1B's theoretical bubble is
-1/(microbatches + 1) of the step.
+Two ways, both used for `docs/pipelines.md`:
+
+- From step times: run the same layout with 4 and 8 microbatches. Step time
+  is a fixed cost plus a per-microbatch time; the fixed cost holds the
+  bubble and the once-per-step work.
+- From traces: `--profile_steps=20:22`, then
+  `python -m jaxtitan.observability.profile DIR` gives each GPU's compute,
+  collective, copy and idle shares. Discard runs whose first traced step was
+  much slower than the untraced ones.

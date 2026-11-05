@@ -102,6 +102,12 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 stage (`--stage_fsdp`, `--tensor_parallel`, `--stage_layers`) and
 checkpointing.
 
+When a job is done, free the GPUs for the next user. On the host,
+`scripts/cleanup_after_train.sh` shows what it would do: stop your JAX-Titan
+processes, remove your stale RCCL segments in `/dev/shm`, and remove the
+checkpoint directories you name with `--checkpoint`. Rerun it with `--yes` to
+apply. It never touches other users' processes or files.
+
 Prepare the training data once with `python -m jaxtitan.data.text`, which
 downloads WikiText-103 and writes Llama 3 token ids to `${JAXTITAN_ROOT}/data`.
 The tokenizer comes from a sibling MaxText checkout (override with
