@@ -12,7 +12,9 @@ IFRT IR interpreter on the ROCm PJRT plugin, without Pathways.
 
 ## Architecture
 
-![JAX-Titan architecture: MaxText and MaxDiffusion reference models on a shared framework and pluggable operators, over Shardy MPMD and the JAX-Titan runtime, then IFRT, ROCm PJRT and XLA, then RCCL, MORI and AMD GPUs](docs/images/architecture.png)
+<p align="center">
+  <img src="docs/images/architecture.png" width="640" alt="JAX-Titan architecture: MaxText and MaxDiffusion reference models on a shared framework and pluggable operators, over Shardy MPMD and the JAX-Titan runtime, then IFRT, ROCm PJRT and XLA, then RCCL, MORI and AMD GPUs">
+</p>
 
 This is the target design; [What works](#what-works) lists what runs today.
 
