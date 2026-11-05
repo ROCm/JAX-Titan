@@ -25,9 +25,12 @@ Create worktrees in `${JAXTITAN_ROOT}/src` and apply the patches from
 
 | Tree | Revision | Patch |
 |---|---|---|
-| `jax` | jax-ml/jax main (`8e6230833e` was tested) | `jaxlib-ifrt-ir-on-pjrt.patch` |
-| `xla` | the commit pinned in jax's `MODULE.bazel` (`c6c791ab`) | `xla-ifrt-ir-rocm-platform.patch` |
-| `shardy` | the commit pinned in XLA's `third_party/shardy/workspace.bzl` (`8c601ca5`) | `shardy-mpmd-oss-mlir-import.patch` |
+| `jax` | jax-ml/jax main (`6b39d495e5` was tested) | `jaxlib-ifrt-ir-on-pjrt.patch` |
+| `xla` | openxla/xla main at or after `dfca2c9`, which has the ROCm IFRT IR fix ([#52290](https://github.com/openxla/xla/pull/52290); `d23c30982a` was tested) | none |
+| `shardy` | the commit pinned in that XLA's `third_party/shardy/workspace.bzl` (`b6b99997`) | `shardy-mpmd-oss-mlir-import.patch` |
+
+jax's `MODULE.bazel` can pin an older XLA than the fix; the build script
+overrides it with the `xla` tree.
 
 ## 3. Build
 
@@ -95,6 +98,9 @@ Llama 3.1 8B with 65,536 tokens per step (32 sequences of 2,048 tokens), full
 remat, XLA attention and AdamW on WikiText-103. All runs start from the same
 weights and train on the same batches, so their step-0 losses match. Step
 times are medians over steps 5-99. Per-step metrics are in `results/`.
+A 30-step recheck on 2026-11-05, with jax `6b39d495e5` and XLA `d23c30982a`
+and no XLA patch, gave the same pipeline result: 1.69 s per step and 181-182
+GiB per GPU.
 
 The pipeline runs 2 stages of 4 GPUs, data parallel inside each stage, with
 1F1B over 8 microbatches of 4 sequences. `--reduce_grads` sets when a stage

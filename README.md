@@ -54,15 +54,16 @@ compiled = mpmd.jit(
 
 ## Requirements
 
-JAX-Titan needs three small patches on top of upstream, kept in
+JAX-Titan needs two small patches on top of upstream, kept in
 [third_party/patches](third_party/patches):
 
 - **jaxlib:** compile IFRT IR MPMD programs on PJRT-backed IFRT clients.
   Upstream jaxlib only compiles them through Pathways.
-- **XLA:** accept the ROCm platform in the IFRT IR atom-program passes.
-  Upstream as [openxla/xla#52290](https://github.com/openxla/xla/pull/52290),
-  approved.
 - **Shardy MPMD JAX API:** an import fix for open-source builds.
+
+XLA needs no patch: ROCm support in the IFRT IR atom-program passes landed as
+[openxla/xla#52290](https://github.com/openxla/xla/pull/52290) (`dfca2c9`), so
+build against XLA `main` at or after that commit.
 
 [docs/getting_started.md](docs/getting_started.md) covers the TheRock
 container, the from-source JAX build and the Python environment.
@@ -81,7 +82,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `examples/` | MPMD spike and parity checks |
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
 | `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
-| `third_party/patches/` | jaxlib, XLA and Shardy patches |
+| `third_party/patches/` | jaxlib and Shardy patches |
 | `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
 
 ## Roadmap
@@ -99,5 +100,5 @@ MIT, see [LICENSE](LICENSE). Two directories keep the Apache License 2.0:
 
 - `src/jaxpp/`: the original JaxPP project, with its own `LICENSE` and file
   headers.
-- `third_party/patches/`: patches to jax, XLA and Shardy, which are Apache-2.0
+- `third_party/patches/`: patches to jax and Shardy, which are Apache-2.0
   projects. See [third_party/patches/README.md](third_party/patches/README.md).
