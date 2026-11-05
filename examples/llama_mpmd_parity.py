@@ -24,6 +24,16 @@ def parse_args(argv=None):
   parser.add_argument("--stages_per_mesh", type=int, default=1)
   parser.add_argument("--microbatches", type=int, default=4)
   parser.add_argument("--steps", type=int, default=4)
+  parser.add_argument(
+      "--lr", type=float, default=0.5,
+      help="SGD learning rate. 0.5 moves the parameters far in a few steps, "
+      "but over tens of steps it amplifies rounding differences.",
+  )
+  parser.add_argument(
+      "--rtol", type=float, default=1e-5,
+      help="Loss tolerance; parameters get 10x. Rounding differences grow "
+      "with steps, so long runs need more.",
+  )
   parser.add_argument("--reduce_grads", default="step", choices=["microbatch", "step"])
   parser.add_argument("--stage_fsdp", action="store_true")
   parser.add_argument("--tensor_parallel", type=int, default=1)
@@ -71,7 +81,7 @@ def main(argv=None):
       stage_fns.append(functools.partial(lambda f, p, x: f(p, x, None), fn))
     else:
       stage_fns.append(fn)
-  optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(0.5))
+  optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(args.lr))
 
   keys = jax.random.split(jax.random.key(0), num_stages)
   host_params = tuple(
@@ -137,6 +147,7 @@ def main(argv=None):
 
   mpmd_params, mpmd_opt = jax.device_put((host_params, host_opt), (param_sh, opt_sh))
   ref_params, ref_opt = host_params, host_opt
+  worst = 0.0
   for step, batch in enumerate(batches):
     tok, tgt = batch[..., :-1], batch[..., 1:]
     mpmd_params, mpmd_opt, mpmd_loss = compiled(
@@ -144,10 +155,12 @@ def main(argv=None):
     )
     ref_params, ref_opt, ref_loss = ref(ref_params, ref_opt, tok, tgt)
     print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}")
-    np.testing.assert_allclose(float(mpmd_loss), float(ref_loss), rtol=1e-5)
+    np.testing.assert_allclose(float(mpmd_loss), float(ref_loss), rtol=args.rtol)
+    worst = max(worst, abs(float(mpmd_loss) / float(ref_loss) - 1))
   for a, b in zip(jax.tree.leaves(jax.device_get(mpmd_params)),
                   jax.tree.leaves(jax.device_get(ref_params))):
-    np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(a, b, rtol=10 * args.rtol, atol=args.rtol)
+  print(f"largest relative loss difference over {args.steps} steps: {worst:.2e}")
   layout = f"{num_stages} stages"
   if args.stage_fsdp:
     layout += ", FSDP"
