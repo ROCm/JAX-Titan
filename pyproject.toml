@@ -17,6 +17,7 @@ dependencies = [
     "jaxtyping",
     "numpy",
     "optax",
+    "orbax-checkpoint",
     "pyarrow",
     "tiktoken",
     "typing_extensions",
