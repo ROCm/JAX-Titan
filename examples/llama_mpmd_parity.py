@@ -5,21 +5,32 @@ in fp32, so their losses and parameters must agree. SGD keeps the parameter
 check tight: Adam magnifies rounding noise in near-zero embedding gradients.
 
   python examples/llama_mpmd_parity.py --platform=cpu
+  python examples/llama_mpmd_parity.py --platform=cpu --stage_fsdp --tensor_parallel=2
 """
 
 import argparse
 import functools
+import json
 import os
 import sys
 
 
-def main():
+def parse_args(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument("--platform", default="cpu", choices=["cpu", "rocm"])
   parser.add_argument("--schedule", default="ONE_FWD_ONE_BWD")
+  parser.add_argument("--mpmd_options", default="", help="JSON object, as in the trainer.")
+  parser.add_argument("--num_stages", type=int, default=2)
+  parser.add_argument("--microbatches", type=int, default=4)
   parser.add_argument("--steps", type=int, default=4)
   parser.add_argument("--reduce_grads", default="step", choices=["microbatch", "step"])
-  args = parser.parse_args()
+  parser.add_argument("--stage_fsdp", action="store_true")
+  parser.add_argument("--tensor_parallel", type=int, default=1)
+  return parser.parse_args(argv)
+
+
+def main(argv=None):
+  args = parse_args(argv)
   if args.platform == "cpu":
     os.environ["JAX_PLATFORMS"] = "cpu"
 
@@ -32,6 +43,7 @@ def main():
     jax.config.update("jax_num_cpu_devices", 8)
 
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
@@ -39,11 +51,11 @@ def main():
   NamedSharding = jax.sharding.NamedSharding  # pylint: disable=invalid-name
 
   cfg = llama.FLAVORS["llama3-test"]
-  num_stages, num_mb, mb, seq = 2, 4, 4, 64
-  topology = jt_mpmd.make_topology(num_stages)
-  config = jt_mpmd.make_config(topology, args.schedule or None)
+  num_stages, num_mb, mb, seq = args.num_stages, args.microbatches, 4, 64
+  topology = jt_mpmd.make_topology(num_stages, tensor_parallel=args.tensor_parallel)
+  options = json.loads(args.mpmd_options) if args.mpmd_options else None
+  config = jt_mpmd.make_config(topology, args.schedule or None, options)
   meshes = [topology[jt_mpmd.mesh_name(i)] for i in range(num_stages)]
-  replicated = [NamedSharding(m, P()) for m in meshes]
 
   stage_fns = []
   for i in range(num_stages):
@@ -88,12 +100,19 @@ def main():
       new_s.append(s)
     return tuple(new_p), tuple(new_s), loss
 
+  specs = [
+      parallel.tree_specs(
+          (host_params[i], host_opt[i]), llama.logical_axes, meshes[i].shape,
+          fsdp=args.stage_fsdp,
+      )
+      for i in range(num_stages)
+  ]
   param_sh = tuple(
-      jax.tree.map(lambda _, s=replicated[i]: s, host_params[i])
+      jax.tree.map(lambda s, m=meshes[i]: NamedSharding(m, s), specs[i][0])
       for i in range(num_stages)
   )
   opt_sh = tuple(
-      jax.tree.map(lambda _, s=replicated[i]: s, host_opt[i])
+      jax.tree.map(lambda s, m=meshes[i]: NamedSharding(m, s), specs[i][1])
       for i in range(num_stages)
   )
   tok_sh = NamedSharding(meshes[0], P(None, jt_mpmd.DATA_AXIS, None))
@@ -102,7 +121,8 @@ def main():
   if args.reduce_grads == "step":
     copy_axes = [llama.device_copy_axes(p) for p in host_params]
   train_step = jt_mpmd.make_train_step(
-      stage_fns, optimizer, copy_axes=copy_axes, mesh=meshes[0]
+      stage_fns, optimizer, copy_axes=copy_axes,
+      param_specs=[s[0] for s in specs], mesh=meshes[0],
   )
   compiled = mpmd.jit(
       train_step, config,
@@ -124,8 +144,13 @@ def main():
   for a, b in zip(jax.tree.leaves(jax.device_get(mpmd_params)),
                   jax.tree.leaves(jax.device_get(ref_params))):
     np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
+  layout = f"{num_stages} stages"
+  if args.stage_fsdp:
+    layout += ", FSDP"
+  if args.tensor_parallel > 1:
+    layout += f", tensor parallel {args.tensor_parallel}"
   print(
-      f"MPMD pipeline ({args.schedule}, gradients reduced per "
+      f"MPMD pipeline ({args.schedule}, {layout}, gradients reduced per "
       f"{args.reduce_grads}) matches the single-mesh reference"
   )
   return 0

@@ -7,7 +7,6 @@ and a SwiGLU MLP.
 
 from collections.abc import Sequence
 import dataclasses
-import functools
 
 import jax
 import jax.numpy as jnp
@@ -87,6 +86,39 @@ def init_stage_params(
   return params
 
 
+_LAYER_AXES = {
+    "attn_norm": ("embed",),
+    "wq": ("embed", "heads"),
+    "wk": ("embed", "kv_heads"),
+    "wv": ("embed", "kv_heads"),
+    "wo": ("heads", "embed"),
+    "mlp_norm": ("embed",),
+    "w_gate": ("embed", "mlp"),
+    "w_up": ("embed", "mlp"),
+    "w_down": ("mlp", "embed"),
+}
+_OTHER_AXES = {
+    "embed": ("vocab_in", "embed"),
+    "final_norm": ("embed",),
+    "lm_head": ("embed", "vocab"),
+}
+
+
+def logical_axes(path: tuple, leaf) -> tuple | None:
+  """Logical axes of a parameter, or of an optimizer-state leaf mirroring one.
+
+  Returns None for leaves that are not parameter-shaped, such as step counts.
+  """
+  keys = [k.key for k in path if isinstance(k, jax.tree_util.DictKey)]
+  if not keys:
+    return None
+  if "layers" in keys[:-1]:
+    axes = ("layers",) + _LAYER_AXES.get(keys[-1], ())
+  else:
+    axes = _OTHER_AXES.get(keys[-1], ())
+  return axes if len(axes) == getattr(leaf, "ndim", -1) else None
+
+
 def device_copy_axes(params: dict) -> dict:
   """Axes to stack per-device parameter copies along, one per leaf.
 
@@ -133,8 +165,13 @@ def _decoder_layer(cfg: LlamaConfig, h: jax.Array, p: dict) -> jax.Array:
   return h + ops.swiglu(x, p["w_gate"], p["w_up"], p["w_down"])
 
 
-def _run_layers(cfg: LlamaConfig, layers: dict, h: jax.Array, remat: bool):
+def _run_layers(
+    cfg: LlamaConfig, layers: dict, h: jax.Array, remat: bool, compute_dtype
+):
+  # Cast inside the rematerialized body: a cast outside it is saved for the
+  # backward pass, one copy of the stage's weights per in-flight microbatch.
   def body(carry, p):
+    p = jax.tree.map(lambda w: w.astype(compute_dtype), p)
     return _decoder_layer(cfg, carry, p), None
 
   if remat:
@@ -166,19 +203,18 @@ def stage_forward(
 
   `constrain` places a sharding constraint on activations at stage boundaries.
   """
-  cast = functools.partial(jax.tree.map, lambda w: w.astype(compute_dtype))
   if stage == 0:
-    h = cast(params["embed"])[inputs]
+    h = params["embed"][inputs].astype(compute_dtype)
   else:
     h = inputs
   if constrain is not None:
     h = constrain(h)
-  h = _run_layers(cfg, cast(params["layers"]), h, remat)
+  h = _run_layers(cfg, params["layers"], h, remat, compute_dtype)
   if stage < num_stages - 1:
     return constrain(h) if constrain is not None else h
   h = ops.rms_norm(h, params["final_norm"], cfg.norm_eps)
   logits = jnp.einsum(
-      "bse,ev->bsv", h, cast(params["lm_head"]),
+      "bse,ev->bsv", h, params["lm_head"].astype(compute_dtype),
       preferred_element_type=jnp.float32,
   )
   return cross_entropy(logits, targets)

@@ -5,7 +5,7 @@ microbatch is an `mpmd.call` with its own call counter, so Shardy's pipeline
 schedules can interleave forward and backward fragments across microbatches.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -14,7 +14,10 @@ import optax
 from shardy.integrations.python.jax import mpmd
 from shardy.integrations.python.jax.mpmd import pipeline_registry
 
-DATA_AXIS = "data"
+from jaxtitan import parallel
+
+DATA_AXIS = parallel.DATA_AXIS
+TENSOR_AXIS = parallel.TENSOR_AXIS
 
 
 def stage_name(i: int) -> str:
@@ -26,25 +29,43 @@ def mesh_name(i: int) -> str:
 
 
 def make_topology(
-    num_stages: int, devices: Sequence[jax.Device] | None = None
+    num_stages: int,
+    devices: Sequence[jax.Device] | None = None,
+    *,
+    tensor_parallel: int = 1,
 ) -> dict[str, jax.sharding.Mesh]:
-  """Splits devices into one equally sized data-parallel mesh per stage."""
+  """Splits devices into one equally sized (data, tensor) mesh per stage.
+
+  Consecutive devices of a stage form its tensor-parallel groups.
+  """
   devices = list(jax.devices() if devices is None else devices)
   if len(devices) % num_stages:
     raise ValueError(f"{len(devices)} devices do not split into {num_stages} stages")
   per_stage = len(devices) // num_stages
+  if per_stage % tensor_parallel:
+    raise ValueError(
+        f"{per_stage} devices per stage do not split into tensor-parallel "
+        f"groups of {tensor_parallel}"
+    )
+  shape = (per_stage // tensor_parallel, tensor_parallel)
   return {
       mesh_name(i): jax.sharding.Mesh(
-          np.asarray(devices[i * per_stage:(i + 1) * per_stage]), (DATA_AXIS,)
+          np.asarray(devices[i * per_stage:(i + 1) * per_stage]).reshape(shape),
+          (DATA_AXIS, TENSOR_AXIS),
       )
       for i in range(num_stages)
   }
 
 
 def make_config(
-    topology: dict[str, jax.sharding.Mesh], schedule: str | None = None
+    topology: dict[str, jax.sharding.Mesh],
+    schedule: str | None = None,
+    options: Mapping[str, bool | str] | None = None,
 ) -> mpmd.Config:
   """`schedule` names an entry of Shardy's pipeline registry, e.g. "GPIPE".
+
+  `options` are extra Shardy MPMD partitioning options, such as
+  `mpmd_merge_inferred_after_scheduling`.
 
   Input and output meshes are taken from the `jit` shardings rather than
   inferred, since inference may move per-stage state such as optimizer step
@@ -55,6 +76,7 @@ def make_config(
       topology,
       {stage_name(i): mesh_name(i) for i in range(n)},
       name_to_stage_assignment={stage_name(i): i for i in range(n)},
+      partitioning_options=dict(options) if options else None,
       read_input_output_mesh_from_shardings=True,
       pipeline_schedule=(
           pipeline_registry.get_pipeline_schedule(schedule) if schedule else None
@@ -91,19 +113,24 @@ def pipeline_loss(
   return total / num_microbatches
 
 
-def _device_copies(params, axes, mesh: jax.sharding.Mesh):
-  """Stacks `params` once per device of `mesh` along `axes`, one copy each."""
+def _device_copies(params, axes, specs, mesh: jax.sharding.Mesh):
+  """Stacks `params` once per data-parallel rank of `mesh` along `axes`.
+
+  Each copy keeps the tensor-parallel sharding of its parameter. Parameters
+  sharded over the data axis are all-gathered into their copies.
+  """
   n = mesh.shape[DATA_AXIS]
 
-  def copy(x, axis):
+  def copy(x, axis, s):
+    entries = parallel.without_axis(s, DATA_AXIS, x.ndim)
     shape = x.shape[:axis] + (n,) + x.shape[axis:]
-    spec = jax.sharding.PartitionSpec(*([None] * axis + [DATA_AXIS]))
+    copy_spec = jax.sharding.PartitionSpec(*entries[:axis], DATA_AXIS, *entries[axis:])
     return jax.lax.with_sharding_constraint(
         jnp.broadcast_to(jnp.expand_dims(x, axis), shape),
-        jax.sharding.NamedSharding(mesh, spec),
+        jax.sharding.NamedSharding(mesh, copy_spec),
     )
 
-  return jax.tree.map(copy, params, axes)
+  return jax.tree.map(copy, params, axes, specs)
 
 
 def _per_device(fn: Callable[..., jax.Array], axes, n: int, last: bool):
@@ -126,18 +153,24 @@ def make_train_step(
     optimizer: optax.GradientTransformation,
     *,
     copy_axes: Sequence | None = None,
+    param_specs: Sequence | None = None,
     mesh: jax.sharding.Mesh | None = None,
 ) -> Callable:
   """Returns `step(stage_params, opt_states, tokens, targets)`.
 
   Every stage keeps its own optimizer state, so gradient clipping is per stage.
 
-  By default a stage all-reduces its gradients across its devices in the
-  backward pass of every microbatch. With `copy_axes`, one pytree of axes per
-  stage, each device trains its own copy of the stage parameters stacked
-  along those axes: microbatch gradients stay on their device, and the stage
-  sums them across devices once per step. `stage_fns` then see one device's
-  share of a microbatch and must not constrain shardings.
+  By default a stage reduces its gradients across its data-parallel ranks in
+  the backward pass of every microbatch. With `copy_axes`, one pytree of axes
+  per stage, each rank trains its own copy of the stage parameters stacked
+  along those axes: microbatch gradients stay on their rank, and the stage
+  sums them across ranks once per step. `stage_fns` then see one rank's share
+  of a microbatch and must not constrain shardings.
+
+  `param_specs`, one pytree of PartitionSpecs per stage, gives the sharding of
+  each stage's parameters inside its mesh; the default is replicated. Copies
+  keep the tensor-parallel part of it. Summed gradients take the full spec, so
+  parameters sharded over the data axis get their gradients reduce-scattered.
 
   `mesh` is any one stage mesh. `jax.jit` requires every sharding constraint
   in a program to name the same devices; Shardy MPMD only uses its axes.
@@ -145,6 +178,11 @@ def make_train_step(
   if copy_axes is not None:
     last = len(stage_fns) - 1
     n = mesh.shape[DATA_AXIS]
+    if param_specs is None:
+      param_specs = [
+          jax.tree.map(lambda _: jax.sharding.PartitionSpec(), axes)
+          for axes in copy_axes
+      ]
     device_fns = [
         _per_device(fn, copy_axes[i], n, i == last) for i, fn in enumerate(stage_fns)
     ]
@@ -155,13 +193,20 @@ def make_train_step(
           lambda p: pipeline_loss(stage_fns, p, tokens, targets)
       )(stage_params)
     copies = [
-        _device_copies(p, copy_axes[i], mesh) for i, p in enumerate(stage_params)
+        _device_copies(p, copy_axes[i], param_specs[i], mesh)
+        for i, p in enumerate(stage_params)
     ]
     loss, copy_grads = jax.value_and_grad(
         lambda c: pipeline_loss(device_fns, c, tokens, targets)
     )(copies)
+
+    def reduce(g, axis, s):
+      return jax.lax.with_sharding_constraint(
+          g.sum(axis), jax.sharding.NamedSharding(mesh, s)
+      )
+
     grads = [
-        jax.tree.map(lambda g, axis: g.sum(axis), g, copy_axes[i])
+        jax.tree.map(reduce, g, copy_axes[i], param_specs[i])
         for i, g in enumerate(copy_grads)
     ]
     return loss, grads
