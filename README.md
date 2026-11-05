@@ -95,12 +95,17 @@ JAX-Titan on AMD's SPUR cluster.
 
 ## Roadmap
 
+- Model reference providers: MaxText for LLMs (Llama 3, Qwen3 dense and MoE,
+  Mixtral, DeepSeek V4), pinned at `maxtext-v0.2.5`, and MaxDiffusion for
+  diffusion models (Flux, then Wan 2.2 with its dual-expert training), pinned
+  at `821afc36`. JAX-Titan takes their model definitions, configs and
+  checkpoint converters, and replaces their trainers, sharding and TPU kernels
+  with its own.
 - Operator providers: ROCm Transformer Engine, JAX-AITER, jax-triton, MORI-EP
   for MoE dispatch/combine, and FlyDSL later.
 - Interleaved 1F1B and DualPipeV as custom Shardy schedules, and faster
   checkpoint saves.
-- Multi-node execution, MaxText and MaxDiffusion model adapters, and RL
-  post-training with Ray and vLLM.
+- Multi-node execution, and RL post-training with Ray and vLLM.
 
 ## License
 
