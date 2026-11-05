@@ -66,6 +66,8 @@ JAX-Titan needs three small patches on top of upstream, kept in
 
 [docs/getting_started.md](docs/getting_started.md) covers the TheRock
 container, the from-source JAX build and the Python environment.
+[docs/amd-jax-train-runbook](docs/amd-jax-train-runbook) covers running
+JAX-Titan on AMD's SPUR cluster.
 
 ## Layout
 
@@ -77,7 +79,7 @@ container, the from-source JAX build and the Python environment.
 | `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
 | `src/jaxtitan/trainer` | Training entry point: `python -m jaxtitan.trainer.train` |
 | `examples/` | MPMD spike and parity checks |
-| `scripts/` | Container, build, environment and GPU-availability scripts |
+| `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
 | `third_party/patches/` | jaxlib, XLA and Shardy patches |
 | `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
 
