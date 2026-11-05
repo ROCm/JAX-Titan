@@ -40,6 +40,11 @@ def parse_args(argv=None):
       help="Shardy pipeline schedule name, or empty for the default order.",
   )
   parser.add_argument(
+      "--stage_layers", default="",
+      help="Comma-separated decoder layers per stage, e.g. 17,15; default "
+      "even. dp and fsdp start from the weights of this split.",
+  )
+  parser.add_argument(
       "--stages_per_mesh", type=int, default=1,
       help="Pipeline stages on each mesh; above 1 for circular schedules, "
       "which put stage i on mesh i %% (num_stages / stages_per_mesh).",
@@ -132,6 +137,10 @@ def _decay_mask(params):
   )
 
 
+def _stage_layers(args):
+  return tuple(int(n) for n in args.stage_layers.split(",")) if args.stage_layers else None
+
+
 def _abstract(shapes, shardings):
   import jax  # pylint: disable=g-import-not-at-top
 
@@ -185,8 +194,12 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
     else:
       stage_fns.append(fn)
 
+  layers = _stage_layers(args)
+
   def init_stage(i, key):
-    params = llama.init_stage_params(cfg, key, stage=i, num_stages=num_stages)
+    params = llama.init_stage_params(
+        cfg, key, stage=i, num_stages=num_stages, layers=layers
+    )
     return params, optimizer.init(params)
 
   keys = jax.random.split(jax.random.key(args.seed), num_stages)
@@ -269,9 +282,13 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
   )
   batch_sharding = NamedSharding(mesh, P(parallel.DATA_AXIS))
 
+  layers = _stage_layers(args)
+
   def init_params(keys):
     return llama.merge_stage_params([
-        llama.init_stage_params(cfg, keys[i], stage=i, num_stages=args.num_stages)
+        llama.init_stage_params(
+            cfg, keys[i], stage=i, num_stages=args.num_stages, layers=layers
+        )
         for i in range(args.num_stages)
     ])
 

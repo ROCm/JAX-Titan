@@ -55,12 +55,33 @@ def _normal(key, shape, std):
   return std * jax.random.normal(key, shape, jnp.float32)
 
 
+def stage_layer_counts(
+    cfg: LlamaConfig, num_stages: int, layers: Sequence[int] | None = None
+) -> tuple[int, ...]:
+  """Decoder layers per stage: `layers` if given, else an even split."""
+  if layers is None:
+    if cfg.num_layers % num_stages:
+      raise ValueError(f"{cfg.num_layers} layers do not split evenly into {num_stages} stages")
+    return (cfg.num_layers // num_stages,) * num_stages
+  if len(layers) != num_stages or sum(layers) != cfg.num_layers or min(layers) < 1:
+    raise ValueError(f"stage layers {tuple(layers)} do not split {cfg.num_layers} layers into {num_stages} stages")
+  return tuple(layers)
+
+
 def init_stage_params(
-    cfg: LlamaConfig, key: jax.Array, stage: int, num_stages: int
+    cfg: LlamaConfig,
+    key: jax.Array,
+    stage: int,
+    num_stages: int,
+    layers: Sequence[int] | None = None,
 ) -> dict:
-  """Returns fp32 parameters for one pipeline stage."""
-  assert cfg.num_layers % num_stages == 0, (cfg.num_layers, num_stages)
-  n = cfg.num_layers // num_stages
+  """Returns fp32 parameters for one pipeline stage.
+
+  `layers` gives the decoder layers of each stage; the default splits them
+  evenly. The last stage also holds the output head, so giving it fewer
+  layers balances the stages.
+  """
+  n = stage_layer_counts(cfg, num_stages, layers)[stage]
   e, f, d = cfg.emb_dim, cfg.mlp_dim, cfg.head_dim
   hq, hkv = cfg.num_query_heads, cfg.num_kv_heads
   ks = jax.random.split(key, 9)

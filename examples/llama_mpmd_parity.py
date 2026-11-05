@@ -22,6 +22,7 @@ def parse_args(argv=None):
   parser.add_argument("--mpmd_options", default="", help="JSON object, as in the trainer.")
   parser.add_argument("--num_stages", type=int, default=2)
   parser.add_argument("--stages_per_mesh", type=int, default=1)
+  parser.add_argument("--stage_layers", default="", help="e.g. 3,1; default even.")
   parser.add_argument("--microbatches", type=int, default=4)
   parser.add_argument("--steps", type=int, default=4)
   parser.add_argument(
@@ -83,9 +84,10 @@ def main(argv=None):
       stage_fns.append(fn)
   optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(args.lr))
 
+  layers = tuple(int(n) for n in args.stage_layers.split(",")) if args.stage_layers else None
   keys = jax.random.split(jax.random.key(0), num_stages)
   host_params = tuple(
-      jax.device_get(llama.init_stage_params(cfg, keys[i], i, num_stages))
+      jax.device_get(llama.init_stage_params(cfg, keys[i], i, num_stages, layers))
       for i in range(num_stages)
   )
   host_opt = tuple(jax.device_get(optimizer.init(p)) for p in host_params)
