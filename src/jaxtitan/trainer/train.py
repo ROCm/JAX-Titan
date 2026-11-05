@@ -40,6 +40,11 @@ def parse_args(argv=None):
       help="Shardy pipeline schedule name, or empty for the default order.",
   )
   parser.add_argument(
+      "--stages_per_mesh", type=int, default=1,
+      help="Pipeline stages on each mesh; above 1 for circular schedules, "
+      "which put stage i on mesh i %% (num_stages / stages_per_mesh).",
+  )
+  parser.add_argument(
       "--mpmd_options", default="",
       help="JSON object of extra Shardy MPMD partitioning options, e.g. "
       '\'{"mpmd_merge_inferred_after_scheduling": true}\'.',
@@ -148,12 +153,15 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
   NamedSharding = jax.sharding.NamedSharding  # pylint: disable=invalid-name
 
   num_stages = args.num_stages
+  num_meshes = num_stages // args.stages_per_mesh
   topology = jt_mpmd.make_topology(
-      num_stages, devices, tensor_parallel=args.tensor_parallel
+      num_meshes, devices, tensor_parallel=args.tensor_parallel
   )
   options = json.loads(args.mpmd_options) if args.mpmd_options else None
-  config = jt_mpmd.make_config(topology, args.schedule or None, options)
-  meshes = [topology[jt_mpmd.mesh_name(i)] for i in range(num_stages)]
+  config = jt_mpmd.make_config(
+      topology, args.schedule or None, options, num_stages=num_stages
+  )
+  meshes = [topology[jt_mpmd.mesh_name(i % num_meshes)] for i in range(num_stages)]
   data_parallel = meshes[0].shape[jt_mpmd.DATA_AXIS]
   if args.microbatch_size % data_parallel:
     raise ValueError(
@@ -422,11 +430,13 @@ def main(argv=None):
 
   for step in range(start, args.steps):
     if profile and step == profile[0]:
+      jax.block_until_ready((params, opt_states))
       jax.profiler.start_trace(args.profile_dir)
     tokens, targets = layout.put_batch(next_batch(step))
     t0 = time.time()
-    params, opt_states, loss = compiled(params, opt_states, tokens, targets)
-    loss = float(loss)
+    with jax.profiler.StepTraceAnnotation("train_step", step_num=step):
+      params, opt_states, loss = compiled(params, opt_states, tokens, targets)
+      loss = float(loss)
     dt = time.time() - t0
     if profile and step == profile[1] - 1:
       jax.block_until_ready((params, opt_states))

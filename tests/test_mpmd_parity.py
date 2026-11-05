@@ -32,6 +32,9 @@ def test_two_mesh_spike(tmp_path):
     ["--reduce_grads=microbatch", "--stage_fsdp", "--tensor_parallel=2"],
     ["--schedule=GPIPE"],
     ["--num_stages=4", "--microbatches=8"],
+    ['--mpmd_options={"mpmd_merge_inferred_after_scheduling": true}'],
+    ["--schedule=ZERO_BUBBLE_H1"],
+    ["--schedule=CIRCULAR", "--num_stages=4", "--stages_per_mesh=2"],
 ], ids=lambda f: " ".join(f))
 def test_llama_parity(flags):
   out = _run("examples/llama_mpmd_parity.py", *flags)

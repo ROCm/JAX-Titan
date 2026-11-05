@@ -61,21 +61,29 @@ def make_config(
     topology: dict[str, jax.sharding.Mesh],
     schedule: str | None = None,
     options: Mapping[str, bool | str] | None = None,
+    *,
+    num_stages: int | None = None,
 ) -> mpmd.Config:
   """`schedule` names an entry of Shardy's pipeline registry, e.g. "GPIPE".
 
   `options` are extra Shardy MPMD partitioning options, such as
   `mpmd_merge_inferred_after_scheduling`.
 
+  With more stages than meshes, as circular schedules need, stage `i` runs on
+  mesh `i % len(topology)`.
+
   Input and output meshes are taken from the `jit` shardings rather than
   inferred, since inference may move per-stage state such as optimizer step
   counters to another mesh.
   """
   n = len(topology)
+  num_stages = num_stages or n
+  if num_stages % n:
+    raise ValueError(f"{num_stages} stages do not split evenly over {n} meshes")
   return mpmd.make_config(
       topology,
-      {stage_name(i): mesh_name(i) for i in range(n)},
-      name_to_stage_assignment={stage_name(i): i for i in range(n)},
+      {stage_name(i): mesh_name(i % n) for i in range(num_stages)},
+      name_to_stage_assignment={stage_name(i): i for i in range(num_stages)},
       partitioning_options=dict(options) if options else None,
       read_input_output_mesh_from_shardings=True,
       pipeline_schedule=(

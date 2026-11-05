@@ -21,6 +21,7 @@ def parse_args(argv=None):
   parser.add_argument("--schedule", default="ONE_FWD_ONE_BWD")
   parser.add_argument("--mpmd_options", default="", help="JSON object, as in the trainer.")
   parser.add_argument("--num_stages", type=int, default=2)
+  parser.add_argument("--stages_per_mesh", type=int, default=1)
   parser.add_argument("--microbatches", type=int, default=4)
   parser.add_argument("--steps", type=int, default=4)
   parser.add_argument("--reduce_grads", default="step", choices=["microbatch", "step"])
@@ -52,10 +53,13 @@ def main(argv=None):
 
   cfg = llama.FLAVORS["llama3-test"]
   num_stages, num_mb, mb, seq = args.num_stages, args.microbatches, 4, 64
-  topology = jt_mpmd.make_topology(num_stages, tensor_parallel=args.tensor_parallel)
+  num_meshes = num_stages // args.stages_per_mesh
+  topology = jt_mpmd.make_topology(num_meshes, tensor_parallel=args.tensor_parallel)
   options = json.loads(args.mpmd_options) if args.mpmd_options else None
-  config = jt_mpmd.make_config(topology, args.schedule or None, options)
-  meshes = [topology[jt_mpmd.mesh_name(i)] for i in range(num_stages)]
+  config = jt_mpmd.make_config(
+      topology, args.schedule or None, options, num_stages=num_stages
+  )
+  meshes = [topology[jt_mpmd.mesh_name(i % num_meshes)] for i in range(num_stages)]
 
   stage_fns = []
   for i in range(num_stages):
