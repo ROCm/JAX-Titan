@@ -36,8 +36,9 @@ def parse_args(argv=None):
       "pipeline with this many stages.",
   )
   parser.add_argument(
-      "--schedule", default="ONE_FWD_ONE_BWD",
-      help="Shardy pipeline schedule name, or empty for the default order.",
+      "--schedule", default="ZERO_BUBBLE_H1",
+      help="Shardy pipeline schedule name, e.g. ONE_FWD_ONE_BWD, GPIPE or "
+      "CIRCULAR, or empty for the default order.",
   )
   parser.add_argument(
       "--stage_layers", default="",

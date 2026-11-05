@@ -66,8 +66,10 @@ def make_config(
 ) -> mpmd.Config:
   """`schedule` names an entry of Shardy's pipeline registry, e.g. "GPIPE".
 
-  `options` are extra Shardy MPMD partitioning options, such as
-  `mpmd_merge_inferred_after_scheduling`.
+  `options` are extra Shardy MPMD partitioning options. With a schedule,
+  `mpmd_merge_inferred_after_scheduling` defaults to True: merging inferred
+  fragments first folds the optimizer update into one microbatch's backward
+  fragment, which then has to run after every other backward fragment.
 
   With more stages than meshes, as circular schedules need, stage `i` runs on
   mesh `i % len(topology)`.
@@ -80,6 +82,8 @@ def make_config(
   num_stages = num_stages or n
   if num_stages % n:
     raise ValueError(f"{num_stages} stages do not split evenly over {n} meshes")
+  if schedule:
+    options = {"mpmd_merge_inferred_after_scheduling": True, **(options or {})}
   return mpmd.make_config(
       topology,
       {stage_name(i): mesh_name(i % n) for i in range(num_stages)},
