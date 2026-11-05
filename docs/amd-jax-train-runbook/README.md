@@ -39,8 +39,10 @@ JobID you were given; do not allocate nodes unless asked; never ssh to compute
 nodes; never `scancel` a job that is not yours; release what you allocate.
 Then follow jax-titan-on-spur.md, whose checklist gives the order of work.
 After every run, `scripts/cleanup_after_train.sh` frees the GPUs for the next
-user. When a step marked untested works or fails, record the result in the
-file.
+user. The repository's agent skills (`.cursor/skills/` and `.claude/skills/`)
+cover running, monitoring and cleaning up training jobs in general; these
+files add what is specific to SPUR. When a step marked untested works or
+fails, record the result in the file.
 
 ## What is tested
 

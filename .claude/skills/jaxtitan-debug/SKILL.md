@@ -1,0 +1,97 @@
+---
+name: jaxtitan-debug
+description: >-
+  Finds which component owns a JAX-Titan failure (JAX-Titan, jaxlib, Shardy
+  MPMD, XLA IFRT IR or PJRT, ROCm and RCCL) and fixes it at the source as an
+  upstreamable patch. Use when a stack trace or log points into jaxlib, XLA or
+  Shardy, when an MPMD option or schedule does not take effect, when a build
+  of the patched wheels is needed, or when deciding where a fix belongs.
+---
+
+# JAX-Titan Upstream Debug Guide
+
+## Core Principle
+
+JAX-Titan runs on upstream JAX, Shardy and XLA with a few patches. Find the
+component that owns the bug and fix it there, as a patch that can go
+upstream. Never work around an upstream bug inside `src/jaxtitan`.
+
+| Owner | Source tree | Fix goes to |
+|-------|-------------|-------------|
+| JAX-Titan | `src/jaxtitan/` | Normal commit |
+| jaxlib (`sdy_mpmd.cc`, `py_mpmd_loaded_executable.cc`) | `${JAXTITAN_ROOT}/src/jax` | `third_party/patches/jaxlib-*.patch` |
+| Shardy MPMD: Python API, partitioner, jaxlib glue (`mpmd_program.cc`) | `${JAXTITAN_ROOT}/src/shardy` | `third_party/patches/shardy-*.patch` |
+| XLA: IFRT IR (`xla/python/ifrt/ir`), PJRT (`xla/pjrt`), GPU compiler | `${JAXTITAN_ROOT}/src/xla` | `third_party/patches/xla-*.patch` |
+| ROCm, RCCL, driver | none | File an issue; work around only in the environment |
+
+## Finding the Owner
+
+1. Frames in `jaxtitan/` only: JAX-Titan.
+2. `mpmd_program.cc`, `lower_to_fragment_calls.cc`, `scheduler.cc`, or the
+   `shardy.integrations.python.jax.mpmd` package: Shardy.
+3. `program_interpreter.cc`, `IfrtIrProgramCompiler`, `compiled_ifrt_ir_program.cc`:
+   XLA IFRT IR.
+4. `py_mpmd_loaded_executable.cc`, `sdy_mpmd.cc`: jaxlib, but check the
+   arguments JAX-Titan passed first.
+5. `rendezvous.cc ... Initialize clique`, `ncclDevKernel`, `hipError`:
+   RCCL or ROCm. Rule out another job on the same GPUs first.
+
+A wrong value passed from JAX-Titan into a correct upstream API is a
+JAX-Titan bug; fix the caller.
+
+## Known Failures
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `PjRtCompiler requires an HloProgram` | jaxlib without the IFRT-IR-on-PJRT patch | Rebuild with `jaxlib-ifrt-ir-on-pjrt.patch` |
+| The ROCm platform is rejected in the IFRT IR atom-program passes | XLA without `xla-ifrt-ir-rocm-platform.patch` | The patch, or an XLA that contains openxla/xla#52290 |
+| `ModuleNotFoundError: mlir` from Shardy's `jit.py` | Shardy OSS import | `shardy-mpmd-oss-mlir-import.patch` |
+| A boolean partitioning option has no effect | jaxlib's `ParsePartitioningOptions` (Shardy's `mpmd_program.cc`) reads only five boolean options and drops the rest silently | Patch it to read every option, and build jaxlib against the patched Shardy tree |
+| Microbatch 0's backward runs last in 1F1B | The optimizer update is merged into that fragment before scheduling | `mpmd_merge_inferred_after_scheduling`, which needs the option fix above |
+| `Input signature does not match the signature of the compiled function` at step 1 | An input's sharding differs from what the executable returned for it, for example `P(None, None)` against `P()` | Give the step inputs exactly its out_shardings |
+| `Received incompatible devices` from a sharding constraint | Constraints in one MPMD program name different meshes | Use one stage mesh for every constraint |
+| Step 0 hangs in `Initialize clique` | Another job on the same GPUs | Run on an idle node |
+
+Shardy logs each mesh's fragment order when it compiles a step, in lines
+starting `Module jit_train_step on mesh`: the first place to look when a
+schedule does not do what it should.
+
+## Fix Workflow
+
+1. Log the bug in `${JAXTITAN_ROOT}/notes/debug-log.md`: symptom, trace,
+   owner.
+2. Check whether upstream already fixed it:
+   `git -C ${JAXTITAN_ROOT}/src/<tree> fetch origin main` and
+   `git show origin/main:<path>`.
+3. Edit the worktree in `${JAXTITAN_ROOT}/src/<tree>`, never the user's own
+   checkouts.
+4. Regenerate the patch:
+   `git -C ${JAXTITAN_ROOT}/src/<tree> diff -- <paths> > third_party/patches/<name>.patch`,
+   and describe it in `third_party/patches/README.md`.
+5. Rebuild: `WHEELS=jaxlib scripts/build_jax_rocm.sh` for jaxlib (about 2
+   minutes), or the full build for XLA changes in the ROCm plugin. jaxlib
+   compiles Shardy's partitioner from the Shardy archive that XLA pins, so a
+   Shardy C++ fix also needs `--override_repository=shardy=<patched tree>` in
+   the build. Python-only Shardy changes need no rebuild: the venv installs
+   Shardy's package from the worktree.
+6. Reinstall:
+   `pip install --force-reinstall --no-deps ${JAXTITAN_ROOT}/src/jax/dist/<wheel>`.
+7. Verify: the failing case, then the CPU parity check in both
+   gradient-reduction modes, then one GPU run on an idle node.
+8. Record the result in the notes, and list the patch as an upstream PR to
+   send (the user sends PRs; never push).
+
+## Hard Rules
+
+- Never monkey-patch upstream modules from `src/jaxtitan`. The only shim is
+  `src/jaxtitan/_compat.py`.
+- Never copy upstream files into `src/jaxtitan` to work around a bug.
+- One patch file per upstreamable change; patches stay Apache-2.0.
+- The build script overrides jax's pinned XLA with `${JAXTITAN_ROOT}/src/xla`;
+  keep that tree at the commit `docs/getting_started.md` documents.
+- Never push, and never target the rocm-xla `main` branch, which is a mirror.
+
+## Pairing
+
+Pair with `jaxtitan-coding` for changes in `src/jaxtitan`, and with
+`jaxtitan-training` for running, measuring and cleaning up jobs.

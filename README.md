@@ -80,6 +80,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `src/jaxtitan/trainer` | Training entry point: `python -m jaxtitan.trainer.train` |
 | `examples/` | MPMD spike and parity checks |
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
+| `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
 | `third_party/patches/` | jaxlib, XLA and Shardy patches |
 | `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
 
