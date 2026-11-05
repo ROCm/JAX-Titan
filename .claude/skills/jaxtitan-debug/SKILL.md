@@ -44,7 +44,7 @@ JAX-Titan bug; fix the caller.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `PjRtCompiler requires an HloProgram` | jaxlib without the IFRT-IR-on-PJRT patch | Rebuild with `jaxlib-ifrt-ir-on-pjrt.patch` |
-| The ROCm platform is rejected in the IFRT IR atom-program passes | XLA without `xla-ifrt-ir-rocm-platform.patch` | The patch, or an XLA that contains openxla/xla#52290 |
+| The ROCm platform is rejected in the IFRT IR atom-program passes | XLA older than openxla/xla#52290 | Build against XLA main at or after `dfca2c9`, as `docs/getting_started.md` documents |
 | `ModuleNotFoundError: mlir` from Shardy's `jit.py` | Shardy OSS import | `shardy-mpmd-oss-mlir-import.patch` |
 | A boolean partitioning option has no effect | jaxlib's `ParsePartitioningOptions` (Shardy's `mpmd_program.cc`) reads only five boolean options and drops the rest silently | Patch it to read every option, and build jaxlib against the patched Shardy tree |
 | Microbatch 0's backward runs last in 1F1B | The optimizer update is merged into that fragment before scheduling | `mpmd_merge_inferred_after_scheduling`, which needs the option fix above |
