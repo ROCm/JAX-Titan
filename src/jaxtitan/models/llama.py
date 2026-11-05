@@ -7,7 +7,6 @@ and a SwiGLU MLP.
 
 from collections.abc import Sequence
 import dataclasses
-import functools
 
 import jax
 import jax.numpy as jnp
@@ -56,12 +55,33 @@ def _normal(key, shape, std):
   return std * jax.random.normal(key, shape, jnp.float32)
 
 
+def stage_layer_counts(
+    cfg: LlamaConfig, num_stages: int, layers: Sequence[int] | None = None
+) -> tuple[int, ...]:
+  """Decoder layers per stage: `layers` if given, else an even split."""
+  if layers is None:
+    if cfg.num_layers % num_stages:
+      raise ValueError(f"{cfg.num_layers} layers do not split evenly into {num_stages} stages")
+    return (cfg.num_layers // num_stages,) * num_stages
+  if len(layers) != num_stages or sum(layers) != cfg.num_layers or min(layers) < 1:
+    raise ValueError(f"stage layers {tuple(layers)} do not split {cfg.num_layers} layers into {num_stages} stages")
+  return tuple(layers)
+
+
 def init_stage_params(
-    cfg: LlamaConfig, key: jax.Array, stage: int, num_stages: int
+    cfg: LlamaConfig,
+    key: jax.Array,
+    stage: int,
+    num_stages: int,
+    layers: Sequence[int] | None = None,
 ) -> dict:
-  """Returns fp32 parameters for one pipeline stage."""
-  assert cfg.num_layers % num_stages == 0, (cfg.num_layers, num_stages)
-  n = cfg.num_layers // num_stages
+  """Returns fp32 parameters for one pipeline stage.
+
+  `layers` gives the decoder layers of each stage; the default splits them
+  evenly. The last stage also holds the output head, so giving it fewer
+  layers balances the stages.
+  """
+  n = stage_layer_counts(cfg, num_stages, layers)[stage]
   e, f, d = cfg.emb_dim, cfg.mlp_dim, cfg.head_dim
   hq, hkv = cfg.num_query_heads, cfg.num_kv_heads
   ks = jax.random.split(key, 9)
@@ -85,6 +105,39 @@ def init_stage_params(
     params["final_norm"] = jnp.ones((e,), jnp.float32)
     params["lm_head"] = _normal(ks[8], (e, cfg.vocab_size), 0.02)
   return params
+
+
+_LAYER_AXES = {
+    "attn_norm": ("embed",),
+    "wq": ("embed", "heads"),
+    "wk": ("embed", "kv_heads"),
+    "wv": ("embed", "kv_heads"),
+    "wo": ("heads", "embed"),
+    "mlp_norm": ("embed",),
+    "w_gate": ("embed", "mlp"),
+    "w_up": ("embed", "mlp"),
+    "w_down": ("mlp", "embed"),
+}
+_OTHER_AXES = {
+    "embed": ("vocab_in", "embed"),
+    "final_norm": ("embed",),
+    "lm_head": ("embed", "vocab"),
+}
+
+
+def logical_axes(path: tuple, leaf) -> tuple | None:
+  """Logical axes of a parameter, or of an optimizer-state leaf mirroring one.
+
+  Returns None for leaves that are not parameter-shaped, such as step counts.
+  """
+  keys = [k.key for k in path if isinstance(k, jax.tree_util.DictKey)]
+  if not keys:
+    return None
+  if "layers" in keys[:-1]:
+    axes = ("layers",) + _LAYER_AXES.get(keys[-1], ())
+  else:
+    axes = _OTHER_AXES.get(keys[-1], ())
+  return axes if len(axes) == getattr(leaf, "ndim", -1) else None
 
 
 def device_copy_axes(params: dict) -> dict:
@@ -133,12 +186,17 @@ def _decoder_layer(cfg: LlamaConfig, h: jax.Array, p: dict) -> jax.Array:
   return h + ops.swiglu(x, p["w_gate"], p["w_up"], p["w_down"])
 
 
-def _run_layers(cfg: LlamaConfig, layers: dict, h: jax.Array, remat: bool):
+def _run_layers(
+    cfg: LlamaConfig, layers: dict, h: jax.Array, remat: bool, compute_dtype
+):
   def body(carry, p):
     return _decoder_layer(cfg, carry, p), None
 
   if remat:
     body = jax.checkpoint(body, policy=jax.checkpoint_policies.nothing_saveable)
+  # Casting inside the rematerialized body instead costs a second cast in
+  # the backward pass: on MI355X, 2-3% slower and 5-10 GiB more per GPU.
+  layers = jax.tree.map(lambda w: w.astype(compute_dtype), layers)
   h, _ = jax.lax.scan(body, h, layers)
   return h
 
@@ -166,19 +224,18 @@ def stage_forward(
 
   `constrain` places a sharding constraint on activations at stage boundaries.
   """
-  cast = functools.partial(jax.tree.map, lambda w: w.astype(compute_dtype))
   if stage == 0:
-    h = cast(params["embed"])[inputs]
+    h = params["embed"][inputs].astype(compute_dtype)
   else:
     h = inputs
   if constrain is not None:
     h = constrain(h)
-  h = _run_layers(cfg, cast(params["layers"]), h, remat)
+  h = _run_layers(cfg, params["layers"], h, remat, compute_dtype)
   if stage < num_stages - 1:
     return constrain(h) if constrain is not None else h
   h = ops.rms_norm(h, params["final_norm"], cfg.norm_eps)
   logits = jnp.einsum(
-      "bse,ev->bsv", h, cast(params["lm_head"]),
+      "bse,ev->bsv", h, params["lm_head"].astype(compute_dtype),
       preferred_element_type=jnp.float32,
   )
   return cross_entropy(logits, targets)

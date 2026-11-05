@@ -8,9 +8,9 @@ They are adapted from an internal collection of Chinese runbooks for RL
 training (LumenRL, DAPO, Megatron, vLLM, Ray and others). Only the lessons
 about the cluster, containers, storage, networking and debugging carry over;
 [source-runbooks.md](source-runbooks.md) lists every source file and what was
-kept. For JAX-Titan itself, [getting_started.md](../getting_started.md)
-remains the reference: these files wrap its commands and do not repeat its
-measured results.
+kept. For JAX-Titan itself, [getting_started.md](../getting_started.md) and
+[pipelines.md](../pipelines.md) remain the reference: these files wrap their
+commands and do not repeat their measured results.
 
 > **Review before publishing.** These files describe an AMD-internal cluster.
 > Every cluster-specific value (controller URLs, login and compute node names,
@@ -27,7 +27,7 @@ measured results.
 | File | Contents |
 |---|---|
 | [spur-cluster-guide.md](spur-cluster-guide.md) | Cluster facts; rules for agents; connecting, allocating in task or hold mode, running commands on nodes, reaching every node of a multi-node job, renewing, releasing; storage, reliability, troubleshooting |
-| [jax-titan-on-spur.md](jax-titan-on-spur.md) | JAX-Titan on one node: container, wheels, venv, data, CPU check, training, logs, task mode, cleanup and release, checklist |
+| [jax-titan-on-spur.md](jax-titan-on-spur.md) | JAX-Titan on one node: container, wheels, venv, data, CPU tests, training, checkpoints, profiling, logs, task mode, release, checklist |
 | [multi-node-notes.md](multi-node-notes.md) | What the multi-node RL runs learned, and how it maps to JAX multi-process training; preparation only |
 | [source-runbooks.md](source-runbooks.md) | Every source runbook, with what carries over |
 
@@ -51,7 +51,7 @@ fails, record the result in the file.
 | SPUR v2: connecting, task and hold mode, `spur exec`, renewing, releasing, storage | Tested on v2 on 2026-09-16 (source runbooks) |
 | SPUR old pool: interactive allocation, quotas, multi-node allocation, `nx.sh`, rank placement, multi-node storage and container flags, TCP between nodes | Tested on the old pool with PyTorch, RCCL and Ray; multi-node with 4 nodes of 8 GPUs on 2026-08-05 |
 | RDMA over the ionic NICs from containers | Does not work yet: one unsolved error |
-| JAX-Titan: build, venv, data, CPU check, training | Tested on a shared 8x MI355X node outside SPUR (getting_started.md) |
+| JAX-Titan: build, venv, data, CPU tests, training, checkpoints, profiling | Tested on a shared 8x MI355X node outside SPUR (getting_started.md, pipelines.md) |
 | `scripts/cleanup_after_train.sh` | Dry run tested on that node; `--yes` untested |
 | JAX-Titan on a SPUR node: the adapted container script, helper scripts, storage layout, task-mode script | Untested |
 | Multi-node jobs on v2 | Untested |

@@ -4,18 +4,21 @@
 
 `--parallel=dp` and `--parallel=fsdp` train the same model on the same batches
 without the pipeline, as one `jax.jit` program over all devices.
+
+With `--checkpoint_dir`, training resumes from the latest checkpoint there.
 """
 
 import argparse
+import dataclasses
 import functools
 import json
 import os
 import time
+from typing import Any, Callable
 
 from jaxtitan import paths
 
 _NORM_PARAMS = ("attn_norm", "mlp_norm", "final_norm")
-_DATA_AXIS = "data"
 
 
 def parse_args(argv=None):
@@ -33,20 +36,45 @@ def parse_args(argv=None):
       "pipeline with this many stages.",
   )
   parser.add_argument(
-      "--schedule", default="ONE_FWD_ONE_BWD",
-      help="Shardy pipeline schedule name, or empty for the default order.",
+      "--schedule", default="ZERO_BUBBLE_H1",
+      help="Shardy pipeline schedule name, e.g. ONE_FWD_ONE_BWD, GPIPE or "
+      "CIRCULAR, or empty for the default order.",
+  )
+  parser.add_argument(
+      "--stage_layers", default="",
+      help="Comma-separated decoder layers per stage, e.g. 17,15; default "
+      "even. dp and fsdp start from the weights of this split.",
+  )
+  parser.add_argument(
+      "--stages_per_mesh", type=int, default=1,
+      help="Pipeline stages on each mesh; above 1 for circular schedules, "
+      "which put stage i on mesh i %% (num_stages / stages_per_mesh).",
+  )
+  parser.add_argument(
+      "--mpmd_options", default="",
+      help="JSON object of extra Shardy MPMD partitioning options, e.g. "
+      '\'{"mpmd_merge_inferred_after_scheduling": true}\'.',
   )
   parser.add_argument(
       "--reduce_grads", default="step", choices=["microbatch", "step"],
-      help="When mpmd stages sum gradients across their devices: in every "
-      "microbatch's backward pass, or once per step from per-device "
+      help="When mpmd stages sum gradients across their data-parallel ranks: "
+      "in every microbatch's backward pass, or once per step from per-rank "
       "parameter copies.",
+  )
+  parser.add_argument(
+      "--stage_fsdp", action="store_true",
+      help="mpmd: shard parameters and optimizer state across each stage's "
+      "data-parallel ranks.",
+  )
+  parser.add_argument(
+      "--tensor_parallel", type=int, default=1,
+      help="Tensor-parallel degree, inside each stage for mpmd.",
   )
   parser.add_argument("--microbatches", type=int, default=8)
   parser.add_argument(
       "--microbatch_size", type=int, default=4,
-      help="Sequences per microbatch, sharded across a stage's devices. dp and "
-      "fsdp run all microbatches as one batch.",
+      help="Sequences per microbatch, sharded across a stage's data-parallel "
+      "ranks. dp and fsdp run all microbatches as one batch.",
   )
   parser.add_argument("--seq_len", type=int, default=2048)
   parser.add_argument("--steps", type=int, default=50)
@@ -63,9 +91,42 @@ def parse_args(argv=None):
       help="Dense BF16 peak used for MFU; 2500 for MI355X.",
   )
   parser.add_argument("--log_file", default="")
+  parser.add_argument(
+      "--checkpoint_dir", default="",
+      help="Saves training state here, and resumes from its latest checkpoint.",
+  )
+  parser.add_argument(
+      "--checkpoint_every", type=int, default=0,
+      help="Steps between checkpoints; 0 saves only after the last step.",
+  )
+  parser.add_argument(
+      "--profile_steps", default="",
+      help="START:END traces steps [START, END) with jax.profiler into "
+      "--profile_dir.",
+  )
+  parser.add_argument(
+      "--profile_dir", default=str(paths.work_dir() / "profiles"),
+  )
   parser.add_argument("--platform", default="", help="'cpu' runs on 8 CPU devices.")
   parser.add_argument("--seed", type=int, default=0)
   return parser.parse_args(argv)
+
+
+@dataclasses.dataclass
+class Layout:
+  """How the training state is placed and stepped.
+
+  `abstract_state` has the tree structure, shapes, dtypes and shardings of
+  `init()`'s `(params, opt_state)`, so a checkpoint can be restored without
+  initializing first.
+  """
+
+  init: Callable[[], tuple]
+  abstract_state: tuple
+  step: Any
+  batch_spec: Any
+  put_batch: Callable
+  structure: str
 
 
 def _decay_mask(params):
@@ -77,11 +138,24 @@ def _decay_mask(params):
   )
 
 
-def _build_mpmd(args, cfg, devices, optimizer):
-  """Shardy MPMD pipeline: one mesh per stage, data parallel inside each."""
+def _stage_layers(args):
+  return tuple(int(n) for n in args.stage_layers.split(",")) if args.stage_layers else None
+
+
+def _abstract(shapes, shardings):
+  import jax  # pylint: disable=g-import-not-at-top
+
+  return jax.tree.map(
+      lambda x, s: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=s), shapes, shardings
+  )
+
+
+def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
+  """Shardy MPMD pipeline: one mesh per stage, DP, FSDP and TP inside each."""
   import jax  # pylint: disable=g-import-not-at-top
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
@@ -89,10 +163,21 @@ def _build_mpmd(args, cfg, devices, optimizer):
   NamedSharding = jax.sharding.NamedSharding  # pylint: disable=invalid-name
 
   num_stages = args.num_stages
-  topology = jt_mpmd.make_topology(num_stages, devices)
-  config = jt_mpmd.make_config(topology, args.schedule or None)
-  meshes = [topology[jt_mpmd.mesh_name(i)] for i in range(num_stages)]
-  replicated = [NamedSharding(m, P()) for m in meshes]
+  num_meshes = num_stages // args.stages_per_mesh
+  topology = jt_mpmd.make_topology(
+      num_meshes, devices, tensor_parallel=args.tensor_parallel
+  )
+  options = json.loads(args.mpmd_options) if args.mpmd_options else None
+  config = jt_mpmd.make_config(
+      topology, args.schedule or None, options, num_stages=num_stages
+  )
+  meshes = [topology[jt_mpmd.mesh_name(i % num_meshes)] for i in range(num_stages)]
+  data_parallel = meshes[0].shape[jt_mpmd.DATA_AXIS]
+  if args.microbatch_size % data_parallel:
+    raise ValueError(
+        f"--microbatch_size={args.microbatch_size} does not split across "
+        f"{data_parallel} data-parallel ranks per stage"
+    )
   activation_sharding = NamedSharding(meshes[0], P(jt_mpmd.DATA_AXIS))
 
   def constrain(h):
@@ -110,34 +195,53 @@ def _build_mpmd(args, cfg, devices, optimizer):
     else:
       stage_fns.append(fn)
 
+  layers = _stage_layers(args)
+
+  def init_stage(i, key):
+    params = llama.init_stage_params(
+        cfg, key, stage=i, num_stages=num_stages, layers=layers
+    )
+    return params, optimizer.init(params)
+
   keys = jax.random.split(jax.random.key(args.seed), num_stages)
-  params = tuple(
-      jax.jit(
-          functools.partial(llama.init_stage_params, cfg, stage=i, num_stages=num_stages),
-          out_shardings=replicated[i],
-      )(keys[i])
+  shapes = [
+      jax.eval_shape(functools.partial(init_stage, i), keys[i])
       for i in range(num_stages)
-  )
-  opt_states = tuple(
-      jax.jit(optimizer.init, out_shardings=replicated[i])(params[i])
+  ]
+  specs = [
+      parallel.tree_specs(
+          shapes[i], llama.logical_axes, meshes[i].shape, fsdp=args.stage_fsdp
+      )
       for i in range(num_stages)
+  ]
+  shardings = [
+      jax.tree.map(lambda s, m=meshes[i]: NamedSharding(m, s), specs[i])
+      for i in range(num_stages)
+  ]
+
+  def init():
+    states = [
+        jax.jit(functools.partial(init_stage, i), out_shardings=shardings[i])(keys[i])
+        for i in range(num_stages)
+    ]
+    return tuple(s[0] for s in states), tuple(s[1] for s in states)
+
+  param_shardings = tuple(s[0] for s in shardings)
+  opt_shardings = tuple(s[1] for s in shardings)
+  abstract_state = (
+      tuple(_abstract(shapes[i][0], param_shardings[i]) for i in range(num_stages)),
+      tuple(_abstract(shapes[i][1], opt_shardings[i]) for i in range(num_stages)),
   )
 
   mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
-  param_shardings = tuple(
-      jax.tree.map(lambda _, s=replicated[i]: s, params[i]) for i in range(num_stages)
-  )
-  opt_shardings = tuple(
-      jax.tree.map(lambda _, s=replicated[i]: s, opt_states[i])
-      for i in range(num_stages)
-  )
   token_sharding = NamedSharding(meshes[0], P(None, jt_mpmd.DATA_AXIS, None))
   target_sharding = NamedSharding(meshes[-1], P(None, jt_mpmd.DATA_AXIS, None))
   loss_sharding = NamedSharding(meshes[-1], P())
 
   train_step = jt_mpmd.make_train_step(
       stage_fns, optimizer, mesh=meshes[0],
-      copy_axes=[llama.device_copy_axes(p) for p in params] if per_step else None,
+      copy_axes=[llama.device_copy_axes(s[0]) for s in shapes] if per_step else None,
+      param_specs=[s[0] for s in specs],
   )
   jitted = mpmd.jit(
       train_step,
@@ -155,52 +259,55 @@ def _build_mpmd(args, cfg, devices, optimizer):
     )
 
   batch_spec = jax.ShapeDtypeStruct((num_mb, mb, seq), jnp.int32)
-  return params, opt_states, jitted, batch_spec, put_batch
+  return Layout(
+      init, abstract_state, jitted, batch_spec, put_batch, f"mpmd:{num_stages}"
+  )
 
 
-def _fsdp_spec(path, shape, num_devices):
-  """Shards the first dimension that splits evenly, never the layer axis."""
-  import jax  # pylint: disable=g-import-not-at-top
-
-  first = 1 if any(getattr(k, "key", None) == "layers" for k in path) else 0
-  for dim in range(first, len(shape)):
-    if shape[dim] % num_devices == 0:
-      return jax.sharding.PartitionSpec(*([None] * dim + [_DATA_AXIS]))
-  return jax.sharding.PartitionSpec()
-
-
-def _build_spmd(args, cfg, devices, optimizer):
-  """No pipeline: one `jax.jit` program, data parallel over all devices."""
+def _build_spmd(args, cfg, devices, optimizer) -> Layout:
+  """No pipeline: one `jax.jit` program over all devices."""
   import jax  # pylint: disable=g-import-not-at-top
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
   import optax  # pylint: disable=g-import-not-at-top
+  from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
 
   P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name
   NamedSharding = jax.sharding.NamedSharding  # pylint: disable=invalid-name
 
-  mesh = jax.sharding.Mesh(np.asarray(devices), (_DATA_AXIS,))
-  batch_sharding = NamedSharding(mesh, P(_DATA_AXIS))
+  tp = args.tensor_parallel
+  mesh = jax.sharding.Mesh(
+      np.asarray(devices).reshape(len(devices) // tp, tp),
+      (parallel.DATA_AXIS, parallel.TENSOR_AXIS),
+  )
+  batch_sharding = NamedSharding(mesh, P(parallel.DATA_AXIS))
 
-  def sharding(path, leaf):
-    if args.parallel == "fsdp":
-      return NamedSharding(mesh, _fsdp_spec(path, leaf.shape, len(devices)))
-    return NamedSharding(mesh, P())
+  layers = _stage_layers(args)
 
-  def init(keys):
+  def init_params(keys):
     return llama.merge_stage_params([
-        llama.init_stage_params(cfg, keys[i], stage=i, num_stages=args.num_stages)
+        llama.init_stage_params(
+            cfg, keys[i], stage=i, num_stages=args.num_stages, layers=layers
+        )
         for i in range(args.num_stages)
     ])
 
+  def init_state(keys):
+    params = init_params(keys)
+    return params, optimizer.init(params)
+
   keys = jax.random.split(jax.random.key(args.seed), args.num_stages)
-  param_shardings = jax.tree_util.tree_map_with_path(sharding, jax.eval_shape(init, keys))
-  params = jax.jit(init, out_shardings=param_shardings)(keys)
-  opt_shardings = jax.tree_util.tree_map_with_path(
-      sharding, jax.eval_shape(optimizer.init, params)
+  shapes = jax.eval_shape(init_state, keys)
+  shardings = jax.tree.map(
+      lambda s: NamedSharding(mesh, s),
+      parallel.tree_specs(
+          shapes, llama.logical_axes, mesh.shape, fsdp=args.parallel == "fsdp"
+      ),
   )
-  opt_state = jax.jit(optimizer.init, out_shardings=opt_shardings)(params)
+
+  def init():
+    return jax.jit(init_state, out_shardings=shardings)(keys)
 
   loss_fn = functools.partial(
       llama.stage_forward, cfg=cfg, stage=0, num_stages=1, remat=args.remat,
@@ -212,6 +319,7 @@ def _build_spmd(args, cfg, devices, optimizer):
     updates, opt_state = optimizer.update(grads, opt_state, params)
     return optax.apply_updates(params, updates), opt_state, loss
 
+  param_shardings, opt_shardings = shardings
   jitted = jax.jit(
       train_step,
       in_shardings=(param_shardings, opt_shardings, batch_sharding, batch_sharding),
@@ -227,7 +335,9 @@ def _build_spmd(args, cfg, devices, optimizer):
 
   batch = args.microbatches * args.microbatch_size
   batch_spec = jax.ShapeDtypeStruct((batch, args.seq_len), jnp.int32)
-  return params, opt_state, jitted, batch_spec, put_batch
+  return Layout(
+      init, _abstract(shapes, shardings), jitted, batch_spec, put_batch, "spmd"
+  )
 
 
 def main(argv=None):
@@ -248,13 +358,17 @@ def main(argv=None):
 
   cfg = llama.FLAVORS[args.model]
   devices = jax.devices()
+  tp = f", tensor parallel {args.tensor_parallel}" if args.tensor_parallel > 1 else ""
   if args.parallel == "mpmd":
     layout = (
-        f"{args.num_stages} stages | schedule={args.schedule or 'default'} | "
+        f"{args.num_stages} stages{' with FSDP' if args.stage_fsdp else ''}{tp} | "
+        f"schedule={args.schedule or 'default'} | "
         f"gradients reduced per {args.reduce_grads}"
     )
+    if args.mpmd_options:
+      layout += f" | {args.mpmd_options}"
   else:
-    layout = f"{args.parallel} over {len(devices)} devices, no pipeline"
+    layout = f"{args.parallel} over {len(devices)} devices{tp}, no pipeline"
   print(
       f"jax {jax.__version__} | {len(devices)} x {devices[0].device_kind} | "
       f"{args.model} ({cfg.num_params() / 1e9:.2f}B params) | {layout}",
@@ -271,12 +385,33 @@ def main(argv=None):
   )
 
   build = _build_mpmd if args.parallel == "mpmd" else _build_spmd
+  layout = build(args, cfg, devices, optimizer)
+
+  ckpt = None
+  start = 0
+  if args.checkpoint_dir:
+    from jaxtitan.trainer import checkpoint  # pylint: disable=g-import-not-at-top
+
+    ckpt = checkpoint.Checkpointer(args.checkpoint_dir, save_every=args.checkpoint_every)
+    start = ckpt.latest_step() or 0
   t0 = time.time()
-  params, opt_states, jitted, batch_spec, put_batch = build(args, cfg, devices, optimizer)
-  print(f"initialized params and optimizer state in {time.time() - t0:.1f}s", flush=True)
+  if start:
+    (params, opt_states), meta = ckpt.restore(start, layout.abstract_state)
+    if meta["structure"] != layout.structure or meta["model"] != args.model:
+      raise ValueError(
+          f"checkpoint holds {meta['model']} as {meta['structure']}, not "
+          f"{args.model} as {layout.structure}"
+      )
+    print(
+        f"restored step {start} from {args.checkpoint_dir} in {time.time() - t0:.1f}s",
+        flush=True,
+    )
+  else:
+    params, opt_states = layout.init()
+    print(f"initialized params and optimizer state in {time.time() - t0:.1f}s", flush=True)
 
   t0 = time.time()
-  lowered = jitted.lower(params, opt_states, batch_spec, batch_spec)
+  lowered = layout.step.lower(params, opt_states, layout.batch_spec, layout.batch_spec)
   t1 = time.time()
   compiled = lowered.compile()
   print(
@@ -286,29 +421,45 @@ def main(argv=None):
 
   mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
   if args.data == "synthetic":
-    rng = np.random.default_rng(args.seed)
 
-    def next_batch():
+    def next_batch(step):
+      rng = np.random.default_rng((args.seed, step))
       return rng.integers(0, cfg.vocab_size, (num_mb * mb, seq + 1), dtype=np.int32)
 
   else:
-    sampler = WindowSampler(args.data, seq, seed=args.seed)
+    sampler = WindowSampler(args.data, seq, seed=args.seed, step=start)
     print(f"data: {args.data} ({sampler.num_tokens / 1e6:.1f}M tokens)", flush=True)
 
-    def next_batch():
+    def next_batch(step):
+      assert sampler.step == step, (sampler.step, step)
       return sampler.next(num_mb * mb)
 
+  def meta(step):
+    return {
+        "step": step, "model": args.model, "structure": layout.structure,
+        "data": {"seed": args.seed, "step": step},
+    }
+
+  profile = [int(s) for s in args.profile_steps.split(":")] if args.profile_steps else None
   tokens_per_step = num_mb * mb * seq
   flops_per_step = cfg.flops_per_token(seq) * tokens_per_step
   peak_flops = len(devices) * args.peak_tflops_per_device * 1e12
   log = open(args.log_file, "a") if args.log_file else None
 
-  for step in range(args.steps):
-    tokens, targets = put_batch(next_batch())
+  for step in range(start, args.steps):
+    if profile and step == profile[0]:
+      jax.block_until_ready((params, opt_states))
+      jax.profiler.start_trace(args.profile_dir)
+    tokens, targets = layout.put_batch(next_batch(step))
     t0 = time.time()
-    params, opt_states, loss = compiled(params, opt_states, tokens, targets)
-    loss = float(loss)
+    with jax.profiler.StepTraceAnnotation("train_step", step_num=step):
+      params, opt_states, loss = compiled(params, opt_states, tokens, targets)
+      loss = float(loss)
     dt = time.time() - t0
+    if profile and step == profile[1] - 1:
+      jax.block_until_ready((params, opt_states))
+      jax.profiler.stop_trace()
+      print(f"traced steps {profile[0]}-{step} into {args.profile_dir}", flush=True)
     record = {
         "step": step,
         "loss": loss,
@@ -324,7 +475,7 @@ def main(argv=None):
     if log:
       log.write(json.dumps(record) + "\n")
       log.flush()
-    if step == 0:
+    if step == start:
       peaks = [
           (d.memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30
           for d in devices
@@ -332,6 +483,13 @@ def main(argv=None):
       print("peak HBM per device (GiB): " + " ".join(f"{p:.1f}" for p in peaks), flush=True)
     if not np.isfinite(loss):
       raise FloatingPointError(f"non-finite loss at step {step}")
+    if ckpt:
+      t0 = time.time()
+      force = step + 1 == args.steps
+      if ckpt.save(step + 1, (params, opt_states), meta(step + 1), force=force):
+        print(f"saved step {step + 1} in {time.time() - t0:.1f}s", flush=True)
+  if ckpt:
+    ckpt.close()
   return 0
 
 

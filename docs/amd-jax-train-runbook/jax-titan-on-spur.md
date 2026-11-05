@@ -2,14 +2,14 @@
 
 This runbook trains JAX-Titan on one SPUR node with 8 AMD Instinct MI355X
 GPUs: get a node, start the TheRock container on it, build or reuse the JAX
-wheels, set up the venv and the data, run the CPU check, train, and release
-the node. It wraps the commands of
+wheels, set up the venv and the data, run the CPU tests, train, checkpoint,
+profile, and release the node. It wraps the commands of
 [getting_started.md](../getting_started.md) in the SPUR procedures of
 [spur-cluster-guide.md](spur-cluster-guide.md); read that guide's rules and
 Cluster facts first.
 
-> **Status.** The JAX-Titan commands are the ones in getting_started.md,
-> tested on a shared 8x MI355X node outside SPUR. The SPUR
+> **Status.** The JAX-Titan commands are the ones in getting_started.md and
+> pipelines.md, tested on a shared 8x MI355X node outside SPUR. The SPUR
 > procedures (allocating, `spur exec`, renewing, releasing) were tested on the
 > v2 pool on 2026-09-16 by the source runbooks, with other software.
 > **Nobody has run JAX-Titan on SPUR yet.** The adapted container script, the
@@ -17,26 +17,28 @@ Cluster facts first.
 > derived from both and are untested. If something here is wrong, fix this
 > file.
 
-getting_started.md has the measured results; this runbook does not repeat
-them.
+[pipelines.md](../pipelines.md) describes the schedules and layouts and has
+the measured results; this runbook does not repeat them.
 
 ## 1. Where things live
 
 The container mounts the directory that holds the JAX-Titan checkout, so keep
 the checkout, a MaxText checkout (for the Llama 3 tokenizer) and
 `JAXTITAN_ROOT` side by side on the shared home. Only the Bazel output root
-goes to node-local scratch.
+and throwaway checkpoints go to node-local scratch.
 
 | What | Where | Why |
 |---|---|---|
 | JAX-Titan and MaxText checkouts | Shared home, side by side | Visible on the login node and on every node |
-| `JAXTITAN_ROOT` (`.jaxtitan` next to the checkout): source trees, wheels, venv, data, compilation cache, logs | Shared home | Built once and reused on any node; logs readable from the login node |
+| `JAXTITAN_ROOT` (`.jaxtitan` next to the checkout): source trees, wheels, venv, data, compilation cache, logs, profiles, checkpoints you keep | Shared home | Built once and reused on any node; logs readable from the login node |
 | Bazel output root | Node-local scratch | Large, and only needed while building |
+| Throwaway checkpoints | Node-local scratch or `/dev/shm` | Fast, but gone with the node |
 
 On the development machine, the source trees, venv and data took about 3 GB,
-the wheels 189 MB and the Bazel output root about 60 GB. The shared home is a
-group-wide volume with limited free space (Cluster facts), so check
-`df -h "$HOME"` before you build there.
+the wheels 189 MB and the Bazel output root about 60 GB. A Llama 3.1 8B
+checkpoint is 80 GB. The shared home is a group-wide volume with limited free
+space (Cluster facts), so check `df -h "$HOME"` before saving checkpoints
+there.
 
 ## 2. One-time setup on the login node
 
@@ -194,7 +196,8 @@ EOF
 
 cat > "$JT_SPUR/venv.sh" <<'EOF'
 #!/usr/bin/env bash
-# Creates the venv as in getting_started.md section 4.
+# Creates the venv as in getting_started.md section 4, plus orbax-checkpoint and
+# pytest, which pyproject.toml lists.
 set -euo pipefail
 source "$(dirname "$(readlink -f "$0")")/spur.env"
 JAXTITAN_ROOT=$JT_ROOT
@@ -205,6 +208,7 @@ pip install $D/jax-*.whl $D/jaxlib-*.whl
 pip install --no-deps $D/jax_rocm10_plugin-*.whl $D/jax_rocm10_pjrt-*.whl
 pip install optax tiktoken pyarrow jaxtyping absl-py immutabledict typing_extensions chex
 pip install --no-deps -e ${JAXTITAN_ROOT}/src/shardy/shardy/integrations/python/jax/mpmd
+pip install orbax-checkpoint pytest
 EOF
 
 cat > "$JT_SPUR/run.sh" <<'EOF'
@@ -219,7 +223,7 @@ cat > "$JT_SPUR/train.sh" <<'EOF'
 #!/usr/bin/env bash
 # Runs the trainer with XLA's ROCm flags, as in getting_started.md. Appends its
 # output to $JAXTITAN_ROOT/logs/NAME.out and per-step metrics to NAME.jsonl;
-# NAME may include a directory, such as spur/pp2. With TRAIN_TIMEOUT set
+# NAME may include a directory, such as spur/zb_pp2. With TRAIN_TIMEOUT set
 # (for example 30m), a run that takes longer is killed.
 #   train.sh NAME [TRAINER FLAGS...]
 set -euo pipefail
@@ -264,9 +268,9 @@ source "$JT_SPUR/spur.env"
 spur show job --controller "$SPUR" "$JOBID" | head -20    # RUNNING, TresPerNode=gpu:8/node
 ```
 
-A hold-mode job keeps the node until you cancel it (section 14) or its time
+A hold-mode job keeps the node until you cancel it (section 16) or its time
 limit runs out; renew it as in spur-cluster-guide.md section 7. For a single
-training run that releases the node by itself, see section 13.
+training run that releases the node by itself, see section 15.
 
 ## 4. Check the node
 
@@ -326,8 +330,8 @@ What differs from `scripts/container.sh` and getting_started.md section 1:
 - docker needs a writable configuration directory (`DOCKER_CONFIG`).
 - The mounted workspace, the checkout's parent, is on the NFS shared home. The
   container user has your uid, so files there keep your owner.
-- container.sh also mounts `$JT_SCRATCH` (node-local) for the Bazel output root,
-  and gives it to your uid.
+- container.sh also mounts `$JT_SCRATCH` (node-local) for the Bazel output root
+  and throwaway checkpoints, and gives it to your uid.
 - docker's root directory is on node-local disk, so every new node pulls the
   image again and needs a new container. Wheels, venv and data on the shared
   home carry over.
@@ -372,12 +376,14 @@ Skip this if `$JT_ROOT/venv` exists. Otherwise:
 
 ```bash
 in_jt bash $JT_SPUR/venv.sh
-in_jt bash $JT_SPUR/run.sh pip list | grep -iE '^(jax|optax|shardy)'
+in_jt bash $JT_SPUR/run.sh pip list | grep -iE '^(jax|optax|orbax|shardy|pytest)'
 ```
 
-venv.sh runs the commands of getting_started.md section 4. From here on,
-every command in the container sources `scripts/env.sh` first (run.sh and
-train.sh do).
+venv.sh runs the commands of getting_started.md section 4 and also installs
+`orbax-checkpoint` (needed by `--checkpoint_dir` and the checkpoint tests) and
+`pytest`. Both are in `pyproject.toml` but not in getting_started.md's install
+line; the venv JAX-Titan was tested in has them. From here on, every command
+in the container sources `scripts/env.sh` first (run.sh and train.sh do).
 
 ## 8. Prepare the data
 
@@ -391,15 +397,15 @@ This runs on the CPU. It downloads WikiText-103 from Hugging Face into
 training file has about 120.1M tokens. It needs internet access and the
 MaxText checkout next to JAX-Titan.
 
-## 9. Run the CPU check
+## 9. Run the CPU tests
 
 ```bash
-in_jt bash $JT_SPUR/run.sh python examples/llama_mpmd_parity.py --platform=cpu
+in_jt bash $JT_SPUR/run.sh python -m pytest tests/
 ```
 
-It checks the Llama pipeline step (microbatches, 1F1B) against a single-mesh
-`jax.jit` step and ends with `matches the single-mesh reference`. It does not
-use the GPUs: `--platform=cpu` runs it on 8 CPU devices.
+The tests compare every schedule and layout with `jax.jit` and check
+checkpoint resume. They do not use the GPUs: `tests/conftest.py` sets
+`JAX_PLATFORMS=cpu` with 8 CPU devices.
 
 ## 10. Train
 
@@ -419,14 +425,14 @@ gpus_free && \
 in_jt bash $JT_SPUR/run.sh python examples/mpmd_two_mesh_spike.py --platform=rocm
 ```
 
-### Pipeline
+### Zero-bubble pipeline
 
 getting_started.md trains Llama 3.1 8B with 2 stages of 4 MI355X and the
-1F1B schedule like this:
+zero-bubble schedule (`ZERO_BUBBLE_H1`, the trainer's default) like this:
 
 ```bash
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
-  --model=llama3.1-8b --num_stages=2 --schedule=ONE_FWD_ONE_BWD \
+  --model=llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 ```
 
@@ -435,8 +441,8 @@ SPUR, detached:
 
 ```bash
 gpus_free && \
-in_jt -d bash $JT_SPUR/train.sh pp2 \
-  --model=llama3.1-8b --num_stages=2 --schedule=ONE_FWD_ONE_BWD \
+in_jt -d bash $JT_SPUR/train.sh zb_pp2 \
+  --model=llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 ```
 
@@ -453,17 +459,16 @@ in_jt -d bash $JT_SPUR/train.sh fsdp8 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 ```
 
-`--schedule` takes a Shardy pipeline schedule name, such as `GPIPE`, and
-`--reduce_grads` sets when a stage sums gradients across its GPUs: once per
-step (the default) or in every microbatch (getting_started.md).
+pipelines.md describes `--schedule`, `--stage_fsdp`, `--tensor_parallel`,
+`--stage_layers` and `--reduce_grads`.
 
 ### Follow a run
 
 The logs are on the shared home, so follow them from the login node:
 
 ```bash
-tail -f "$JT_ROOT/logs/pp2.out"
-until tail -n 1 "$JT_ROOT/logs/pp2.out" | grep -q 'exit='; do sleep 30; done
+tail -f "$JT_ROOT/logs/zb_pp2.out"
+until tail -n 1 "$JT_ROOT/logs/zb_pp2.out" | grep -q 'exit='; do sleep 30; done
 on_node 'rocm-smi --showuse'        # busy GPUs while it trains
 ```
 
@@ -474,7 +479,7 @@ A healthy start prints these lines, in this order (from a run on the
 development node, with the measured values replaced):
 
 ```text
-jax <version> | 8 x AMD Instinct MI355X | llama3.1-8b (8.03B params) | 2 stages | schedule=ONE_FWD_ONE_BWD | gradients reduced per step
+jax <version> | 8 x AMD Instinct MI355X | llama3.1-8b (8.03B params) | 2 stages | schedule=ZERO_BUBBLE_H1 | gradients reduced per step
 initialized params and optimizer state in <s>s
 lowered in <s>s, compiled in <s>s
 data: <JAXTITAN_ROOT>/data/wikitext103_train.llama3.bin (120.1M tokens)
@@ -486,19 +491,20 @@ peak HBM per device (GiB): <one value per GPU>
   plugin loaded, and the ROCm runtime prints many `queue-intercept` warnings;
   those appeared in successful runs too.
 - Pipeline runs log each mesh's fragment order in lines starting
-  `Module jit_train_step on mesh` while compiling.
+  `Module jit_train_step on mesh` while compiling (pipelines.md).
 - Step 0 takes much longer than the steps after it.
 - Every run starts from the same weights, so the step-0 loss should match the
-  one given with the results in getting_started.md.
+  one given with the results in pipelines.md.
 - The trainer stops with `FloatingPointError` if the loss is not finite.
 
-Give every run a time limit, sized from an earlier run; a hung run does not
+Give every run a time limit, sized from an earlier run, as the repository's
+training skill (`.cursor/skills/jaxtitan-training`) asks; a hung run does not
 end by itself (section 11). Untested on SPUR:
 
 ```bash
 gpus_free && \
-TRAIN_TIMEOUT=30m in_jt -d bash $JT_SPUR/train.sh pp2 \
-  --model=llama3.1-8b --num_stages=2 --schedule=ONE_FWD_ONE_BWD \
+TRAIN_TIMEOUT=30m in_jt -d bash $JT_SPUR/train.sh zb_pp2 \
+  --model=llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 ```
 
@@ -509,7 +515,7 @@ or the `docker exec` client does not stop it:
 on_node 'docker exec "$JT_CONTAINER" pkill -KILL -f "[j]axtitan.trainer.train"'
 ```
 
-`scripts/cleanup_after_train.sh` (section 14) does the same and more.
+`scripts/cleanup_after_train.sh` (section 16) does the same and more.
 
 ## 11. Lessons from a shared node
 
@@ -529,13 +535,14 @@ SPUR, where other users' jobs could start at any time.
   were killed by a 30-minute timeout while the other user's processes were on
   the GPUs; only the rerun on the idle node completed, in about 3.5 minutes.
   Runs therefore need a time limit (`TRAIN_TIMEOUT`, section 10). The signs:
-  no `step    0` line within about 3 minutes of `compiled in`, and
+  no `step    0` line within about 3 minutes of `compiled in` (the threshold
+  the repository's training skill uses), and
   `grep -nE "may be stuck|Initialize clique" <log>` finds XLA's rendezvous
   warning. Stop the run, wait until `gpus_free.sh` prints `free` again, and
   rerun.
 - **JAX preallocates 75% of each GPU's memory.** Two jobs on the same GPUs
   leave neither enough room, and the 8B runs use most of their pool (see the
-  peak HBM per GPU in getting_started.md). This includes your own runs: never start
+  peak HBM per GPU in pipelines.md). This includes your own runs: never start
   a second one while the first is running.
 - **The memory takes a moment to come back.** On the shared node,
   `gpus_free.sh` run right after a run had exited reported `vram 75%` on all
@@ -546,7 +553,83 @@ but containers outlive jobs: a finished task once left about 90.9 GB in use on
 every GPU for the next user (spur-cluster-guide.md section 8). If
 `gpus_free.sh` reports busy, look at `on_node 'rocm-smi --showpids; docker ps -a'`.
 
-## 12. Logs
+## 12. Checkpoints
+
+`--checkpoint_dir=DIR` saves parameters and optimizer state with Orbax after
+the last step and every `--checkpoint_every` steps. Rerunning the same command
+resumes from the latest checkpoint in `DIR`, including the data position. The
+getting_started.md example, with FSDP inside each stage and 17 and 15 layers
+per stage:
+
+```bash
+gpus_free && \
+in_jt -d bash $JT_SPUR/train.sh zb_fsdp_ckpt \
+  --model=llama3.1-8b --num_stages=2 --stage_fsdp --stage_layers=17,15 \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100 \
+  --checkpoint_dir=$JT_ROOT/checkpoints/llama8b --checkpoint_every=50
+```
+
+Each save prints `saved step <N> in <s>s`. A rerun prints
+`restored step <N> from <DIR> in <s>s` instead of `initialized ...`; since
+train.sh appends, the resumed run continues the same `.out` and `.jsonl`
+files.
+
+- **Keep checkpoints you need on the shared home.** Jobs can end early without
+  warning, node-local scratch does not move with you and has been wiped
+  (spur-cluster-guide.md sections 9 and 10). `$JT_ROOT/checkpoints` is on the
+  shared home.
+- **Budget the space.** A Llama 3.1 8B checkpoint is 80 GB and the trainer
+  keeps the latest two in each directory: about 160 GB per directory, more
+  while a new one is being written.
+- **Saving blocks training.** Saving blocked training for 31-39 s while the
+  arrays were copied to host memory, and Orbax then wrote the checkpoint in
+  the background (pipelines.md). Checkpoint less often than every few minutes
+  until saving is faster. How long the background write to the shared home
+  takes on SPUR is untested.
+- **Throwaway checkpoints**, for example to test resuming, can go to
+  `--checkpoint_dir=$JT_SCRATCH/checkpoints/<name>` (node-local, mounted in
+  the container) or to `/dev/shm` (memory, node-local, gone on reboot). Never
+  keep the only copy of a checkpoint you need there.
+- **One model and structure per directory.** The trainer refuses a checkpoint
+  of another model or structure (`mpmd:<stages>` for pipelines, `spmd` for
+  `--parallel=dp` and `fsdp`) with a `ValueError`. It does restore into another
+  layout of the same stages, for example with `--stage_fsdp` added.
+- The files belong to you, since the container runs as your uid. Delete
+  checkpoints you no longer need from the login node, or with
+  `scripts/cleanup_after_train.sh --checkpoint DIR` (section 16), which only
+  removes Orbax checkpoints below `/dev/shm`, `/tmp` or `$JT_ROOT`. Ask
+  before deleting a checkpoint that a run may resume from.
+
+## 13. Profiling
+
+`--profile_steps=START:END` traces steps `[START, END)` with `jax.profiler`
+into `--profile_dir`, by default `$JT_ROOT/profiles` on the shared home. Give
+each run its own directory, because the summary reads the newest trace under
+the directory you name. Start after the first steps, since step 0 is slow.
+
+```bash
+gpus_free && \
+in_jt -d bash $JT_SPUR/train.sh zb_pp2_profile \
+  --model=llama3.1-8b --num_stages=2 \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=20 \
+  --profile_steps=10:12 --profile_dir=$JT_ROOT/profiles/zb_pp2
+```
+
+The log prints `traced steps 10-11 into <dir>`. Then summarize the trace, on
+the CPU:
+
+```bash
+in_jt bash $JT_SPUR/run.sh python -m jaxtitan.observability.profile $JT_ROOT/profiles/zb_pp2
+```
+
+It prints, for each GPU, the share of the traced window spent in compute
+kernels, collectives and memory copies, and idle. For a pipeline stage, idle
+is its bubble plus any wait for transfers. `--lines` lists the trace's planes
+and lines instead. Leave the traced steps out of step-time medians: the first
+one carries the profiler's startup cost. Trace sizes and tracing to the shared
+home are untested on SPUR; remove traces you no longer need.
+
+## 14. Logs
 
 Everything is on the shared home and readable from the login node.
 
@@ -555,7 +638,7 @@ Everything is on the shared home and readable from the login node.
 | `$JT_ROOT/logs/<name>.out` | train.sh | Trainer, XLA and Shardy output; a dated first line and an `exit=` line per run |
 | `$JT_ROOT/logs/<name>.jsonl` | `--log_file` | One JSON object per step: `step`, `loss`, `step_time_s`, `tokens_per_s`, `mfu` |
 | `$JT_ROOT/logs/build_jax_rocm.log` | build.sh | The Bazel build and an `exit=` line |
-| `$JT_ROOT/logs/<JobID>.out`, `.err` | `sbatch` | Task-mode job scripts (section 13) |
+| `$JT_ROOT/logs/<JobID>.out`, `.err` | `sbatch` | Task-mode job scripts (section 15) |
 
 Both train.sh files are appended to, so use a new name for each new run, and
 the same name only to resume. Compare `.jsonl` files with the reference runs
@@ -563,7 +646,7 @@ in `docs/results/`. To tell a hang from slow progress, the RL runbooks looked
 at three things: whether the log still changes, whether the process is alive,
 and GPU use (`on_node 'rocm-smi --showuse'`).
 
-## 13. One training run in task mode
+## 15. One training run in task mode
 
 **Untested.** Task mode ends the job, and releases the node, when the job
 script exits (spur-cluster-guide.md section 4.1). This script checks the
@@ -602,37 +685,40 @@ cd /tmp
 sbatch --controller "$SPUR" --parsable -J "$USER-jaxtitan" -p "$PART" \
   -N1 -w "$NODE" --gpus-per-node=8 --exclusive -c 64 -t 04:00:00 \
   -o "$JT_ROOT/logs/%j.out" -e "$JT_ROOT/logs/%j.err" \
-  --wrap "bash $JT_SPUR/task.sh bash $JT_SPUR/train.sh pp2_task \
-    --model=llama3.1-8b --num_stages=2 --schedule=ONE_FWD_ONE_BWD \
+  --wrap "bash $JT_SPUR/task.sh bash $JT_SPUR/train.sh zb_pp2_task \
+    --model=llama3.1-8b --num_stages=2 \
     --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100"
 ```
 
 Confirm `R` with `squeue`; afterwards, `sacct --controller "$SPUR" | grep <JobID>`
 shows `COMPLETED` and `0:0` on success. The trainer's output is in
-`$JT_ROOT/logs/pp2_task.out`, the job script's in `<JobID>.out`. The trap
+`$JT_ROOT/logs/zb_pp2_task.out`, the job script's in `<JobID>.out`. The trap
 does not run if the job script is killed outright, and once the job is gone,
 `spur exec` cannot reach the node; a container left behind then holds the
 GPUs for the next user.
 
-## 14. Clean up and release the node
+## 16. Clean up and release the node
 
 As soon as a run finishes, fails, hangs or is no longer needed, free the GPUs
 with `scripts/cleanup_after_train.sh`. It stops your JAX-Titan processes,
 waits until none of your processes hold a GPU, removes your stale RCCL
-segments in `/dev/shm`, and removes the Orbax checkpoint directories you name
-with `--checkpoint`; it never touches other users' processes or files. On a
-workstation, run it on the host. On SPUR, run it in the container, where it
-runs as you; `spur exec`
+segments in `/dev/shm`, and removes the checkpoint directories you name; it
+never touches other users' processes or files. getting_started.md runs it on
+the host. On SPUR, run it in the container, where it runs as you; `spur exec`
 may run as someone else, and the script acts only on `$USER`'s processes and
 files. Untested on SPUR:
 
 ```bash
 in_jt scripts/cleanup_after_train.sh                     # dry run: prints the plan
 in_jt scripts/cleanup_after_train.sh --yes               # apply
+in_jt scripts/cleanup_after_train.sh --yes --checkpoint $JT_ROOT/checkpoints/<name>
 gpus_free
 ```
 
-Also remove other large outputs you no longer need, and keep the logs.
+It removes checkpoints only below `/dev/shm`, `/tmp` or `$JT_ROOT`, so it
+skips throwaway checkpoints under `$JT_SCRATCH`; remove those as described
+below. Also remove profiler traces and other large outputs you no longer
+need, and keep the logs.
 
 In hold mode, then remove the container, check that the GPUs are free, and
 cancel the job:
@@ -647,7 +733,8 @@ squeue --controller "$SPUR" -u "$USER"      # the job is gone
 Only cancel a job you allocated or whose owner asked you to. Remove containers
 before the job ends: afterwards, `spur exec` cannot reach the node.
 
-The shared home keeps the wheels, venv, data and logs for the next node. Node-local scratch can stay; it belongs to this node and may be wiped
+The shared home keeps the wheels, venv, data, logs and checkpoints for the next
+node. Node-local scratch can stay; it belongs to this node and may be wiped
 anyway. To clean it, do so before removing the container, as root in the
 container, because Bazel leaves read-only directories:
 
@@ -655,7 +742,7 @@ container, because Bazel leaves read-only directories:
 on_node 'docker exec "$JT_CONTAINER" find "$JT_SCRATCH" -mindepth 1 -delete'
 ```
 
-## 15. Troubleshooting
+## 17. Troubleshooting
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
@@ -664,17 +751,19 @@ on_node 'docker exec "$JT_CONTAINER" find "$JT_SCRATCH" -mindepth 1 -delete'
 | `useradd` or `groupadd` errors, or `in_jt id` does not show your uid | spur.env written by someone else, or the gid already exists in the image | Rewrite spur.env on the login node as yourself; `docker rm -f` the container and start it again |
 | `docker` reports a permission error on the node | No docker access from `spur exec` | Stop and ask |
 | `venv/bin/activate: No such file or directory` | The venv does not exist yet | Section 7 |
+| `No module named 'orbax'` or `'pytest'` | venv made with getting_started.md's install line only | `pip install orbax-checkpoint pytest` (venv.sh does) |
 | `tokenizer_llama3.tiktoken` not found | No MaxText checkout next to JAX-Titan | Clone it (section 2), or `in_jt bash $JT_SPUR/run.sh env JAXTITAN_LLAMA3_TOKENIZER=<file> python -m jaxtitan.data.text` |
 | No `step    0` within about 3 minutes of `compiled in`; `may be stuck` and `Initialize clique` in the log | Another job on the GPUs during RCCL setup | Stop the run; wait for `free`; rerun (section 11) |
 | The run keeps going after you interrupted `spur exec` or `docker exec` | The process lives in the container | Stop it in the container (section 10) |
-| `/dev/shm` collects `nccl-*` files | Killed runs leave RCCL segments behind | `scripts/cleanup_after_train.sh --yes` (section 14) |
+| `/dev/shm` collects `nccl-*` files | Killed runs leave RCCL segments behind | `scripts/cleanup_after_train.sh --yes` (section 16) |
 | Out of GPU memory at the start of a run | Another process holds GPU memory | `gpus_free.sh`; remove leftover containers |
 | `gpus_free.sh` reports `vram 75%` right after your run | The memory is still being released | Check again 30 seconds later |
-| The shared home fills up | GPU core dumps, or old build outputs | Delete `gpucore.*` files and outputs you no longer need |
+| `ValueError: checkpoint holds ... not ...` | `--checkpoint_dir` holds another model or structure | One directory per model and structure |
+| The shared home fills up | Checkpoints (80 GB each, two kept per directory) or GPU core dumps | Delete old checkpoints and `gpucore.*` files; throwaway checkpoints to scratch |
 | `Memory access fault by GPU node-<n>`, then `gpucore.<pid>` files of 50-80 GB | ROCm writes a GPU core dump into the working directory; seen with PyTorch on ROCm 7.0, untested with JAX-Titan | The working directory is the checkout on the shared home: delete `$JT_REPO/gpucore.*` at once. `HSA_ENABLE_COREDUMP=0` reportedly disables them; untested |
-| The job ended with a container still running | Containers outlive jobs | Remove containers before the job ends (section 14) |
+| The job ended with a container still running | Containers outlive jobs | Remove containers before the job ends (section 16) |
 
-## 16. Checklist
+## 18. Checklist
 
 - [ ] Read the rules and Cluster facts in spur-cluster-guide.md.
 - [ ] Checkouts and `$JT_ROOT/src` on the shared home; spur.env and the
@@ -683,10 +772,11 @@ on_node 'docker exec "$JT_CONTAINER" find "$JT_SCRATCH" -mindepth 1 -delete'
 - [ ] `rocm-smi` shows 8 GPUs; `gpus_free.sh` prints `free`.
 - [ ] Container started; `in_jt id` shows your uid.
 - [ ] Wheels in `$JT_ROOT/src/jax/dist` and the venv in `$JT_ROOT/venv`.
-- [ ] Data in `$JT_ROOT/data`; the CPU check passes.
+- [ ] Data in `$JT_ROOT/data`; CPU tests pass.
 - [ ] Before each GPU run, `gpus_free.sh` prints `free` and none of your runs
       is still going.
 - [ ] Each new run has its own name; you waited for `exit=` before the next.
+- [ ] Checkpoints you keep are on the shared home, and it has room.
 - [ ] After each run: `scripts/cleanup_after_train.sh --yes` in the
       container, and `gpus_free.sh` prints `free`.
 - [ ] At the end: container removed, `gpus_free.sh` prints `free`, and the

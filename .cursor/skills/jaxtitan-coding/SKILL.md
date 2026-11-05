@@ -4,8 +4,8 @@ description: >-
   Architecture rules and coding standards for JAX-Titan, the JAX-native MPMD
   training framework (Shardy MPMD pipelines run as IFRT IR programs on ROCm).
   Use when writing, reviewing or changing code in the JAX-Titan repo: pipeline
-  stages and schedules, shardings, models, the trainer, examples, tests and
-  docs.
+  schedules and stages, shardings and layouts, models, the trainer,
+  checkpoints, tests and docs.
 ---
 
 # JAX-Titan Coding Guide
@@ -24,15 +24,16 @@ later comparison: do not import from it or edit it.
 - **Stages and microbatches:** each stage is an `mpmd.named_computation`
   assigned to a mesh through `jaxtitan.mpmd.make_config`; each microbatch is
   an `mpmd.call` with its own call counter (`jaxtitan.mpmd.pipeline_loss`).
-  Schedules come from Shardy's pipeline registry.
-- **Meshes:** `make_topology` gives every stage its own mesh with a `data`
-  axis. Sharding constraints inside one MPMD program must all use one stage
-  mesh; Shardy MPMD only reads their axes.
-- **Shardings:** a train step's input shardings must equal its out_shardings
-  exactly, for example `P()` for replicated state, or the executable's call
-  cache misses at step 1. Stage state is replicated on its mesh; the
-  no-pipeline FSDP baseline shards the first evenly splitting dimension that
-  is not the layer axis (`_fsdp_spec`).
+  Schedules come from Shardy's registry, or later from custom
+  `FragmentScheduleRule` builders.
+- **Meshes:** every stage mesh has `data` and `tensor` axes
+  (`make_topology`). Sharding constraints inside one MPMD program must all use
+  one stage mesh; Shardy MPMD only reads their axes.
+- **Shardings:** models name the logical axes of each parameter
+  (`models/llama.py: logical_axes`); `jaxtitan.parallel.tree_specs` turns them
+  into PartitionSpecs for DP, FSDP and TP. Do not write PartitionSpecs by hand
+  in the trainer. Specs drop trailing Nones, because MPMD executables return
+  normalized shardings and a train step's inputs must equal its last outputs.
 - **Gradient reduction:** with `--reduce_grads=step`, each data-parallel rank
   trains its own parameter copy and stage functions must not add sharding
   constraints. With `microbatch`, stage functions constrain activations at
@@ -40,23 +41,25 @@ later comparison: do not import from it or edit it.
 - **Operators:** models call semantic ops from `jaxtitan.ops` (`attention`,
   `rms_norm`, `swiglu`), never a kernel library directly.
 - **Precision:** parameters and optimizer state are fp32; compute casts to
-  bf16 before the layer scan. Casting inside the rematerialized layer
-  instead was measured 2-3% slower with more memory per GPU; do not move it
-  without a new A/B.
-- **Entry points** import jax inside `main()`, after `--platform=cpu` sets
-  `JAX_PLATFORMS`.
+  bf16 before the layer scan. Casting inside the rematerialized layer was
+  measured slower; do not move it back without a new A/B.
+- **Trainer:** builders return a `Layout` with `init()` and `abstract_state`,
+  so checkpoints restore without initializing first. Entry points import jax
+  inside `main()`, after `--platform=cpu` sets `JAX_PLATFORMS`.
+- **Checkpoints** go through `jaxtitan.trainer.checkpoint` (Orbax). Restoring
+  takes target shardings from the current layout.
 
 ## Testing Rules
 
-- `examples/llama_mpmd_parity.py --platform=cpu` must pass in both
-  gradient-reduction modes before every commit that touches the pipeline or
-  a model: the pipeline step must match single-mesh `jax.jit` in fp32 with
-  SGD.
-- A new schedule or model gets a parity run with its flags.
-- `python -m pytest tests/` must pass.
+- `python -m pytest tests/` (CPU, 8 devices) must pass before every commit.
+- A new schedule, layout or model gets a case in `tests/test_mpmd_parity.py`:
+  the pipeline step must match single-mesh `jax.jit` in fp32 with SGD
+  (`rtol=1e-5` over 4 steps).
+- Resume behavior is tested in `tests/test_checkpoint.py`: a resumed run must
+  equal the uninterrupted one exactly on CPU.
 - A performance claim needs a GPU run on an idle node against the
   no-pipeline baseline from the same stack (see `jaxtitan-training`), with
-  its JSONL in `docs/results/`.
+  its JSONL in `docs/results/<date>/`.
 
 ## Code Style
 
@@ -67,7 +70,7 @@ later comparison: do not import from it or edit it.
 - Comments only state constraints the code cannot show, never what the next
   line does or why a change is correct.
 - Spell the project `JAX-Titan`. Write docs in plain technical English with
-  complete sentences, and keep measured numbers in `docs/getting_started.md`.
+  complete sentences, and keep measured numbers in `docs/pipelines.md`.
 - Commit locally in logical pieces with a message that says what changed and
   why. Never push; the user pushes. Never edit the user's own `jax` or `xla`
   checkouts; use the worktrees in `${JAXTITAN_ROOT}/src`.

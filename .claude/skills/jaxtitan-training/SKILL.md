@@ -4,9 +4,9 @@ description: >-
   Runs, monitors, compares and cleans up JAX-Titan training jobs on AMD
   Instinct GPUs. Use when launching or benchmarking jaxtitan.trainer.train or
   the examples, when a run hangs, slows down, runs out of memory or diverges,
-  when comparing the pipeline against the no-pipeline baseline, and after a
-  job finishes, fails or is stopped, to stop its processes, free the GPUs and
-  remove leftover files.
+  when comparing pipeline schedules or layouts against the no-pipeline
+  baseline, and after a job finishes, fails or is stopped, to stop its
+  processes, free the GPUs and remove checkpoints.
 ---
 
 # JAX-Titan Training Guide
@@ -15,10 +15,10 @@ description: >-
 
 GPU time on a shared node is the scarce resource. Start a run only on an idle
 node, put a timeout on every run, judge every result against a baseline
-measured on the same stack, and free the GPUs as soon as a job is over. Keep
-notes in `${JAXTITAN_ROOT}/notes/debug-log.md` (`JAXTITAN_ROOT` defaults to
-`.jaxtitan` next to the repo); read it at the start of every new debug
-session.
+measured on the same stack, and free the GPUs and disk as soon as a job is
+over. Keep notes in `${JAXTITAN_ROOT}/notes/debug-log.md` (`JAXTITAN_ROOT`
+defaults to `.jaxtitan` next to the repo); read it at the start of every new
+debug session.
 
 ## Before a Run
 
@@ -27,41 +27,43 @@ session.
    the user's explicit permission.
 2. In the container: `source scripts/env.sh`, and pass
    `XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS"` to GPU runs.
-3. After changes to the pipeline or the model, run the CPU parity check in
-   both gradient-reduction modes first:
-   `python examples/llama_mpmd_parity.py --platform=cpu --reduce_grads=step`
-   and `--reduce_grads=microbatch`.
-4. Wrap the run in `timeout -s KILL <seconds>`, write `--log_file` JSONL, and
+3. After code changes, run the CPU tests first: `python -m pytest tests/`.
+4. Plan checkpoint space: a Llama 3.1 8B checkpoint is 80 GB and the trainer
+   keeps the latest two. `/dev/shm` is host RAM, so do not leave checkpoints
+   there.
+5. Wrap the run in `timeout -s KILL <seconds>`, write `--log_file` JSONL, and
    send stdout and stderr to `${JAXTITAN_ROOT}/logs/<topic>/<run>.out`.
 
 ## Launch
 
 ```bash
-# Pipeline: 2 stages x 4 GPUs, 1F1B.
+# Pipeline: 2 stages x 4 GPUs, zero-bubble schedule (default).
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" timeout -s KILL 1800 python -m jaxtitan.trainer.train \
-  --model=llama3.1-8b --num_stages=2 --schedule=ONE_FWD_ONE_BWD \
-  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=30 \
-  --log_file=$LOG.jsonl > $LOG.out 2>&1
+  --model=llama3.1-8b --num_stages=2 --microbatches=8 --microbatch_size=4 \
+  --seq_len=2048 --steps=30 --log_file=$LOG.jsonl > $LOG.out 2>&1
 
 # The same step without a pipeline: --parallel=dp or --parallel=fsdp.
 ```
 
-`--reduce_grads` sets when a stage sums gradients across its GPUs: once per
-step (default) or in every microbatch. See `docs/getting_started.md`.
+Layout flags: `--schedule`, `--stage_fsdp`, `--tensor_parallel`,
+`--stage_layers`, `--stages_per_mesh`, `--reduce_grads`. Checkpoints:
+`--checkpoint_dir`, `--checkpoint_every`; rerunning resumes. See
+`docs/pipelines.md`.
 
 ## Monitor
 
-- Compiling a 2-stage pipeline step took 73-114 s on MI355X, since MPMD
-  programs bypass the persistent cache; step 0 adds 20-25 s.
+- Compiling a 2-stage pipeline step takes 66-116 s, since MPMD programs
+  bypass the persistent cache; step 0 adds 20-25 s.
 - Read the `peak HBM per device` line after step 0.
-- Report medians over steps 5 to N.
+- Report medians over steps 5 to N. Exclude profiled steps
+  (`--profile_steps`): the first traced step carries profiler startup cost.
 - Red flags:
   - No step 0 within 3 minutes of `compiled in`: grep the log for
     `may be stuck` with `Initialize clique`. That RCCL hang happens when
     another job uses the same GPUs and does not recover. Stop the run, check
     `rocm-smi --showpids`, and rerun on an idle node.
   - `RESOURCE_EXHAUSTED` in a fragment such as `p33_stage1_fwd_call15`: use
-    fewer microbatches or a smaller microbatch size.
+    fewer microbatches, `--stage_fsdp`, or `--tensor_parallel`.
   - `Input signature does not match the signature of the compiled function`
     at step 1: see `jaxtitan-debug`.
   - A non-finite loss: the trainer raises `FloatingPointError`; stop and
@@ -75,9 +77,10 @@ step (default) or in every microbatch. See `docs/getting_started.md`.
   a `git worktree` with `JAXTITAN_ROOT` exported.
 - `--steps` sets the cosine decay length, so compare loss curves only between
   runs with the same `--steps`. GPU runs are not bitwise reproducible; the
-  CPU parity check is the numerics reference.
-- Put per-step JSONL under `docs/results/` and the table in
-  `docs/getting_started.md`.
+  CPU parity check (`examples/llama_mpmd_parity.py`) is the numerics
+  reference.
+- Put per-step JSONL under `docs/results/<date>/` and the table in
+  `docs/pipelines.md`.
 
 ## After the Job: Free the GPUs and Disk
 
@@ -104,13 +107,13 @@ and files. With `--yes` it:
 4. removes each `--checkpoint DIR` that is below `/dev/shm`, `/tmp` or
    `${JAXTITAN_ROOT}`, owned by the user, and holds an Orbax checkpoint.
 
-Other artifacts to check: profiler traces, IR dumps under
-`${JAXTITAN_ROOT}/dumps/`, and A/B worktrees (`git worktree remove`). Keep
-JSONL and stdout logs.
+Other artifacts to check: profiler traces under `--profile_dir`, IR dumps
+under `${JAXTITAN_ROOT}/dumps/`, and A/B worktrees (`git worktree remove`).
+Keep JSONL and stdout logs.
 
 Rules:
-- Delete only files you created for a test or that the user named. Ask
-  before deleting a checkpoint a run may resume from.
+- Delete only checkpoints you created for a test or that the user named.
+  Ask before deleting one a run may resume from.
 - Stopping the host-side `docker exec` client does not stop the process in
   the container; stop the process itself, as the script does.
 - On a shared node, list processes before stopping any, and stop only your
@@ -126,14 +129,15 @@ Rules:
 | "The node looked free a minute ago" | Check again right before the run; another job hangs both |
 | "Let it run, step 0 is just slow" | Past compile plus 3 minutes, it is the RCCL hang |
 | "Clean up later" | Leftover processes hold 75% of every GPU's memory |
-| "That file is probably unused" | Ask, unless you created it for a test |
+| "That checkpoint is probably unused" | Ask, unless you created it for a test |
 | "Faster than last week's number" | Compare against a baseline from the same stack and day |
 
 ## Additional Resources
 
-- [reference.md](reference.md): run naming, the per-run record and the notes
-  format
-- `docs/getting_started.md`: container, build, environment, runs and results
+- [reference.md](reference.md): run naming, the per-run checklist and the
+  notes format
+- `docs/pipelines.md`: schedules, layouts, checkpoints and measured results
+- `docs/getting_started.md`: container, build and environment
 - `docs/amd-jax-train-runbook/`: SPUR cluster access and node usage
 
 ## Pairing

@@ -328,11 +328,15 @@ up yet; start the head, check it, then join.
   section 2.7. Tensor-parallel groups, also consecutive devices, stay inside a
   node when their size divides 8.
 
-### 3.4 Data and caches
+### 3.4 Data, checkpoints and caches
 
-- The token file goes on the shared home, where every node sees it.
+- The token file and checkpoints go on the shared home, where every node sees
+  them. With several processes, Orbax writes one checkpoint from all of them
+  into one directory, which every node must see.
+- Restoring an 80 GB checkpoint on many nodes at once from the shared home may
+  be slow (section 2.3).
 - The JAX compilation cache in `$JT_ROOT/cache/jax` is shared too. MPMD
-  programs do not use it yet, but the no-pipeline programs do:
+  programs do not use it yet (pipelines.md), but the no-pipeline programs do:
   fill it with a single-node run first, or give each process its own
   directory (section 2.3).
 
