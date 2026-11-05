@@ -1,5 +1,5 @@
 diff --git a/shardy/integrations/python/jax/mpmd/jit.py b/shardy/integrations/python/jax/mpmd/jit.py
-index 4bc1ce0..e30a718 100644
+index 4bc1ce0f..e30a718c 100644
 --- a/shardy/integrations/python/jax/mpmd/jit.py
 +++ b/shardy/integrations/python/jax/mpmd/jit.py
 @@ -26,7 +26,7 @@ from jax.interpreters import mlir

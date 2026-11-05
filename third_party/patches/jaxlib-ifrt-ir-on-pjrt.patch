@@ -1,8 +1,8 @@
 diff --git a/jaxlib/BUILD b/jaxlib/BUILD
-index bf8a4fb7f0..1bca691a0a 100644
+index 435130d188..b3ab3215aa 100644
 --- a/jaxlib/BUILD
 +++ b/jaxlib/BUILD
-@@ -1511,6 +1511,7 @@ nanobind_pywrap_extension(
+@@ -1514,6 +1514,7 @@ nanobind_pywrap_extension(
          "@com_google_absl//absl/status:status_macros",
          "@com_google_absl//absl/status:statusor",
          "@com_google_absl//absl/strings:string_view",
@@ -10,7 +10,7 @@ index bf8a4fb7f0..1bca691a0a 100644
          "@com_google_absl//absl/types:span",
          "@llvm-project//llvm:Support",
          "@llvm-project//mlir:CAPIIRHeaders",
-@@ -1534,6 +1535,9 @@ nanobind_pywrap_extension(
+@@ -1537,6 +1538,9 @@ nanobind_pywrap_extension(
          "@xla//xla/python/ifrt:user_context",
          "@xla//xla/python/ifrt/ir:ifrt_ir_program",
          "@xla//xla/python/ifrt/ir:program_memory_tracer",
