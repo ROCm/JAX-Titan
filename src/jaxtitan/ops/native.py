@@ -10,12 +10,18 @@ def rms_norm(x: jax.Array, weight: jax.Array, eps: float) -> jax.Array:
   return (y * weight.astype(jnp.float32)).astype(x.dtype)
 
 
-def attention(q: jax.Array, k: jax.Array, v: jax.Array) -> jax.Array:
-  """Causal attention over [batch, seq, heads, head_dim]; k/v may have fewer heads."""
-  return jax.nn.dot_product_attention(q, k, v, is_causal=True)
+def attention(q: jax.Array, k: jax.Array, v: jax.Array, *, causal: bool = True,
+              scale: float | None = None) -> jax.Array:
+  """Attention over [batch, seq, heads, head_dim]; k/v may have fewer heads."""
+  return jax.nn.dot_product_attention(q, k, v, scale=scale, is_causal=causal)
 
 
 def swiglu(
     x: jax.Array, w_gate: jax.Array, w_up: jax.Array, w_down: jax.Array
 ) -> jax.Array:
   return (jax.nn.silu(x @ w_gate) * (x @ w_up)) @ w_down
+
+
+def linear(x: jax.Array, w: jax.Array) -> jax.Array:
+  """x [..., in] times w [in, out]."""
+  return x @ w

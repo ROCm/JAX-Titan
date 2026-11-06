@@ -52,7 +52,10 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" timeout -s KILL 1800 python -m jaxtitan.tra
 Layout flags: `--schedule`, `--stage_fsdp`, `--tensor_parallel`,
 `--stage_layers`, `--stages_per_mesh`, `--reduce_grads`. Checkpoints:
 `--checkpoint_dir`, `--checkpoint_every`; rerunning resumes. See
-`docs/pipelines.md`. `maxtext:` and `maxdiffusion:` models support only data
+`docs/pipelines.md`. Operators: `--ops=attention=te` (TE fused attention) or
+`--ops=attention=aiter`; TE's FP8 GEMMs and every JAX-AITER op need
+`--per_device=shard_map` with per-step reduction, and the `ops:` lines after
+`compiled in` show what each op ran on. `maxtext:` and `maxdiffusion:` models support only data
 parallelism inside stages with gradients reduced per microbatch (the
 default for them); `--stage_layers` counts their decoder layers or FLUX.1
 blocks, and `--model_overrides` takes JSON config overrides.

@@ -23,6 +23,7 @@ upstream. Never work around an upstream bug inside `src/jaxtitan`.
 | Shardy MPMD: Python API, partitioner, jaxlib glue (`mpmd_program.cc`) | `${JAXTITAN_ROOT}/src/shardy` | `third_party/patches/shardy-*.patch` |
 | XLA: IFRT IR (`xla/python/ifrt/ir`), PJRT (`xla/pjrt`), GPU compiler, ROCm profiler | `${JAXTITAN_ROOT}/src/xla` | `third_party/patches/xla-*.patch` (none today) |
 | MaxDiffusion model code (MaxText needs no patch today) | `${JAXTITAN_ROOT}/src/maxdiffusion` | `third_party/patches/maxdiffusion-*.patch` |
+| TE and JAX-AITER kernels | the TE wheel; `third_party/jax-aiter` | Report upstream; meanwhile make the provider's `supports()` decline the case |
 | ROCm, RCCL, driver | none | File an issue; work around only in the environment |
 
 ## Finding the Owner
@@ -51,6 +52,12 @@ JAX-Titan bug; fix the caller.
 | Microbatch 0's backward runs last in 1F1B | Optimizer update merged before scheduling | `mpmd_merge_inferred_after_scheduling` (default in `make_config`) |
 | `No module named 'torch'` importing MaxDiffusion's FLUX.1 | MaxDiffusion imports its PyTorch weight converter at module level | `maxdiffusion-optional-torch.patch` |
 | FLUX.1-dev fails with a broadcast error in `time_text_embed` or its first block | MaxDiffusion embeds timestep and guidance twice since `64450df4` | `maxdiffusion-flux1-guidance-embedding.patch` |
+| `Batching rule for 'custom_partitioning' not implemented` | A JAX-AITER op under `jax.vmap`, as stages run with `--reduce_grads=step` | `--per_device=shard_map`; the provider declines under vmap |
+| Segfault (exit 139) in JAX-AITER flash attention's backward | ROCm TE loaded in the same process; both bundle AITER's FMHA | Pick one of them for attention; the provider declines when TE is loaded |
+| `is not a axis of the given mesh` from TE fused attention | TE's default `context_parallel_axis=""` with sharded q, k, v | Pass `context_parallel_axis=None`, as `ops/providers/te.py` does |
+| `Global mesh resource is not set` from a TE norm or GEMM | TE partitioners need a `MeshResource` | `ops/providers/te.py` sets an empty one on import |
+| A provider op passes alone but is wrong under vmap or sharded | Kernel batching or partitioning rule (TE and AITER RMSNorm under vmap, TE RMSNorm's weight gradient when sharded) | Run `python -m jaxtitan.ops.conformance` in every mode; make `supports()` decline the case |
+| JAX-AITER `gemm_fp4_bf16` output uncorrelated with BF16 (relative error 1.4) | Its MXFP4 path at `c290cdd`, on JAX-Titan's stack; its own tests check finiteness only | Do not use `aiter_mxfp4`; report upstream |
 | `Input signature does not match the signature of the compiled function` at step 1 | Input shardings differ from what the executable returns, e.g. `P(None, None)` against `P()` | Build specs with `jaxtitan.parallel.spec`, which drops trailing Nones |
 | `Received incompatible devices` from a sharding constraint | Constraints in one MPMD program name different meshes | Use one stage mesh for every constraint |
 | Step 0 hangs in `Initialize clique` | Another job on the same GPUs | Run on an idle node |

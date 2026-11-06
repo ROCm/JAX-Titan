@@ -196,3 +196,60 @@ last. The loss falls from 3.51 to 2.75 in 20 steps.
   `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`. With 4 stages the first holds 5.1B.
 - Compiling took 53-54 s for the MaxText pipelines, 74-110 s for JAX-Titan's
   Llama and 123 s for FLUX.1.
+
+## Operator providers (2026-11-06, 8x MI355X)
+
+`--ops` routes semantic ops to ROCm TE (the 2026-11-02 nightly wheel) or
+JAX-AITER (the `third_party/jax-aiter` submodule, built by
+`scripts/build_jax_aiter.sh`); everything else stays native JAX. Before any
+training run, `python -m jaxtitan.ops.conformance` checked every op against
+native JAX in bf16 and float32 on Llama 3.1 8B and FLUX.1 shapes; its rows
+are in [results/2026-11-06](results/2026-11-06) (`ops-conformance_*.jsonl`).
+
+| Op | Provider | One GPU | vmap | Sharded | shard_map | MPMD step | Forward plus backward |
+|---|---|---|---|---|---|---|---|
+| attention | `te` | pass | pass | pass | pass | pass | 3.7x (Llama), 3.3x (FLUX.1) |
+| attention | `aiter` | pass | no batching rule | pass | pass | pass | 2.7x (Llama), 2.2x (FLUX.1) |
+| rms_norm | `aiter` | pass | wrong forward | pass | pass | pass | 0.96x |
+| rms_norm | TE (not offered) | pass | wrong forward and gradient | wrong weight gradient | pass | wrong weight gradient | 0.72x |
+| swiglu | `aiter` (SiLU-and-mul) | pass | pass | pass | pass | pass | 0.94x |
+| linear | `te`, `aiter` (BF16) | pass | no batching rule | pass | pass | pass | 0.93-1.05x |
+| linear, swiglu | `te_fp8`, `te_mxfp8` | pass (FP8 error) | broken batching rule | pass | pass | pass | 0.6-1.3x |
+| linear, swiglu | `aiter_mxfp4` | wrong (uncorrelated output) | | wrong | wrong | wrong | |
+
+Providers decline what failed (vmap cases, and JAX-AITER attention in a
+process with TE), so those calls fall back to native. The FP8 and MXFP8
+GEMMs are within 3.7-3.8% of BF16 per GEMM and 6.7% for SwiGLU's three.
+
+Training with the same layouts and batches as above:
+
+| Model | Gradients reduced | `--ops` | Step | Throughput | MFU |
+|---|---|---|---|---|---|
+| Llama 3.1 8B, 2 stages | per step (vmap) | native | 1.457 s | 45.0k tokens/s | 10.5% |
+| Llama 3.1 8B, 2 stages | per step (vmap) | `attention=te` | 1.260 s | 52.0k tokens/s | 12.1% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | native | 1.688 s | 38.8k tokens/s | 9.1% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=te` | 1.491 s | 44.0k tokens/s | 10.3% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=aiter` | 1.529 s | 42.9k tokens/s | 10.0% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=te` + `te_fp8` GEMMs | 1.676 s | 39.1k tokens/s | 9.1% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=te` + `te_mxfp8` GEMMs | 1.747 s | 37.5k tokens/s | 8.7% |
+| FLUX.1-dev, 4 stages | per microbatch | MaxDiffusion's attention | 7.269 s | 4.4 images/s | 4.9% |
+| FLUX.1-dev, 4 stages | per microbatch | `attention=native` (XLA) | 8.001 s | 4.0 images/s | 4.5% |
+| FLUX.1-dev, 4 stages | per microbatch | `attention=te` | 5.764 s | 5.6 images/s | 6.2% |
+| FLUX.1-dev, 4 stages | per microbatch | `attention=aiter` | 6.028 s | 5.3 images/s | 5.9% |
+
+- **TE fused attention is the biggest win:** 1.16x on Llama 3.1 8B (12.1%
+  MFU) and 1.26x on FLUX.1-dev, at the same memory. JAX-AITER's flash
+  attention gets 1.10x and 1.21x. Loss curves track native.
+- **`--per_device=shard_map` costs 16%:** Shardy MPMD does not split a
+  backward fragment that contains a manual computation into its activation
+  and weight gradients, so zero-bubble runs like 1F1B (16 split stage-1
+  backward fragments with vmap, 8 with shard_map). TE attention works under
+  vmap and should use it; JAX-AITER needs shard_map until its kernels have
+  batching rules or Shardy splits manual computations.
+- **FP8 and MXFP8 GEMMs are slower end to end** (1.68 and 1.75 s against
+  1.49 s in BF16): quantizing every GEMM's inputs in forward and backward
+  costs more than the faster GEMMs save at Llama 3.1 8B's sizes.
+- **Not usable yet:** JAX-AITER's MXFP4 GEMM returns output uncorrelated with
+  the BF16 product (relative error 1.4) on this stack, though its own tests,
+  which check finiteness, pass. JAX-AITER exposes no MoE kernels at its pin,
+  and `flash_attn_varlen` waits for a packed-sequence data path.

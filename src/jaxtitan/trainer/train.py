@@ -13,6 +13,7 @@ With `--checkpoint_dir`, training resumes from the latest checkpoint there.
 """
 
 import argparse
+import dataclasses
 import functools
 import json
 import os
@@ -37,6 +38,12 @@ def parse_args(argv=None):
       "--model_overrides", default="",
       help="JSON object of model config overrides for maxtext: and "
       "maxdiffusion: models, e.g. '{\"base_num_decoder_layers\": 4}'.",
+  )
+  parser.add_argument(
+      "--ops", default="",
+      help="Operator providers per op, e.g. 'attention=te,rms_norm=aiter:te' "
+      "(see jaxtitan.ops); 'stageN.op=...' overrides one stage. Default: "
+      "native JAX everywhere.",
   )
   parser.add_argument(
       "--parallel", default="mpmd", choices=["mpmd", "dp", "fsdp"],
@@ -75,6 +82,12 @@ def parse_args(argv=None):
       "in every microbatch's backward pass, or once per step from per-rank "
       "parameter copies. Default: step for Llama flavors, microbatch for "
       "maxtext: and maxdiffusion: models, which support only that.",
+  )
+  parser.add_argument(
+      "--per_device", default="vmap", choices=["vmap", "shard_map"],
+      help="With --reduce_grads=step, how each rank's parameter copy runs: "
+      "vmap over the copies, or shard_map over the data axis, which also runs "
+      "operators without a batching rule (JAX-AITER).",
   )
   parser.add_argument(
       "--stage_fsdp", action="store_true",
@@ -159,6 +172,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
   import jax  # pylint: disable=g-import-not-at-top
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
@@ -195,9 +209,8 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
         remat=args.remat, constrain=None if per_step else constrain,
     )
     if i < num_stages - 1:
-      stage_fns.append(functools.partial(lambda f, p, x: f(p, x, None), fn))
-    else:
-      stage_fns.append(fn)
+      fn = functools.partial(lambda f, p, x: f(p, x, None), fn)
+    stage_fns.append(ops.for_stage(fn, i))
 
   layers = _stage_layers(args)
 
@@ -245,7 +258,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
   train_step = jt_mpmd.make_train_step(
       stage_fns, optimizer, mesh=meshes[0],
       copy_axes=[llama.device_copy_axes(s[0]) for s in shapes] if per_step else None,
-      param_specs=[s[0] for s in specs],
+      param_specs=[s[0] for s in specs], per_device=args.per_device,
   )
   jitted = mpmd.jit(
       train_step,
@@ -357,9 +370,11 @@ def main(argv=None):
     jax.config.update("jax_num_cpu_devices", 8)
 
   import jaxtitan  # noqa: F401  pylint: disable=g-import-not-at-top,unused-import
+  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from jaxtitan.data.text import WindowSampler  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
 
+  ops.set_policy(args.ops)
   adapter = ":" in args.model
   if args.reduce_grads is None:
     args.reduce_grads = "microbatch" if adapter else "step"
@@ -371,10 +386,14 @@ def main(argv=None):
         f"schedule={args.schedule or 'default'} | "
         f"gradients reduced per {args.reduce_grads}"
     )
+    if args.reduce_grads == "step" and args.per_device != "vmap":
+      description += f" (copies via {args.per_device})"
     if args.mpmd_options:
       description += f" | {args.mpmd_options}"
   else:
     description = f"{args.parallel} over {len(devices)} devices{tp}, no pipeline"
+  if args.ops:
+    description += f" | ops {args.ops}"
 
   lr = optax.warmup_cosine_decay_schedule(
       0.0, args.lr, args.warmup_steps, max(args.steps, args.warmup_steps + 1),
@@ -430,6 +449,7 @@ def main(argv=None):
     print(f"initialized params and optimizer state in {time.time() - t0:.1f}s", flush=True)
 
   t0 = time.time()
+  ops.reset_selections()
   lowered = layout.step.lower(params, opt_states, layout.input_spec, layout.target_spec)
   t1 = time.time()
   compiled = lowered.compile()
@@ -437,6 +457,8 @@ def main(argv=None):
       f"lowered in {t1 - t0:.1f}s, compiled in {time.time() - t1:.1f}s",
       flush=True,
   )
+  selected = [dataclasses.asdict(s) for s in ops.selections()]
+  print("ops:\n  " + ops.summary().replace("\n", "\n  "), flush=True)
 
   if work.next_batch is not None:
     next_batch = work.next_batch
@@ -463,7 +485,7 @@ def main(argv=None):
   def meta(step):
     return {
         "step": step, "model": args.model, "structure": layout.structure,
-        "data": {"seed": args.seed, "step": step},
+        "data": {"seed": args.seed, "step": step}, "ops": selected,
     }
 
   profile = [int(s) for s in args.profile_steps.split(":")] if args.profile_steps else None

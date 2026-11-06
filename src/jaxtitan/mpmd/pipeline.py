@@ -162,6 +162,34 @@ def _per_device(fn: Callable[..., jax.Array], axes, n: int, last: bool):
   return per_device_fn
 
 
+def _per_device_manual(fn: Callable[..., jax.Array], axes, mesh: jax.sharding.Mesh, last: bool):
+  """`_per_device` as a shard_map over the data axis.
+
+  Each device calls `fn` once on its own copy and share, without a batch
+  axis, so ops with no batching rule (such as custom_partitioning kernels)
+  run. Axes of size 1 are manual too, so without tensor parallelism the
+  shard_map is fully manual: custom_partitioning kernels cannot be
+  partitioned inside a partly manual one.
+  """
+  P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name
+  manual = {DATA_AXIS} | {a for a in mesh.axis_names if mesh.shape[a] == 1}
+
+  def local(copies, x, *targets):
+    params = jax.tree.map(jnp.squeeze, copies, axes)
+    out = fn(params, x, *targets)
+    return jax.lax.pmean(out, DATA_AXIS) if last else out
+
+  def per_device_fn(copies, x, *targets):
+    copy_specs = jax.tree.map(lambda _, axis: P(*([None] * axis), DATA_AXIS), copies, axes)
+    return jax.shard_map(
+        local, mesh=mesh, axis_names=manual, check_vma=False,
+        in_specs=(copy_specs, P(DATA_AXIS)) + (P(DATA_AXIS),) * len(targets),
+        out_specs=P() if last else P(DATA_AXIS),
+    )(copies, x, *targets)
+
+  return per_device_fn
+
+
 def make_train_step(
     stage_fns: Sequence[Callable[..., jax.Array]],
     optimizer: optax.GradientTransformation,
@@ -169,6 +197,7 @@ def make_train_step(
     copy_axes: Sequence | None = None,
     param_specs: Sequence | None = None,
     mesh: jax.sharding.Mesh | None = None,
+    per_device: str = "vmap",
 ) -> Callable:
   """Returns `step(stage_params, opt_states, tokens, targets)`.
 
@@ -186,9 +215,15 @@ def make_train_step(
   keep the tensor-parallel part of it. Summed gradients take the full spec, so
   parameters sharded over the data axis get their gradients reduce-scattered.
 
+  `per_device` picks how each rank's copy runs: `vmap` over the copies, or
+  `shard_map` over the data axis, which also runs ops that have no batching
+  rule.
+
   `mesh` is any one stage mesh. `jax.jit` requires every sharding constraint
   in a program to name the same devices; Shardy MPMD only uses its axes.
   """
+  if per_device not in ("vmap", "shard_map"):
+    raise ValueError(f"per_device={per_device!r}; expected vmap or shard_map")
   if copy_axes is not None:
     last = len(stage_fns) - 1
     n = mesh.shape[DATA_AXIS]
@@ -197,9 +232,15 @@ def make_train_step(
           jax.tree.map(lambda _: jax.sharding.PartitionSpec(), axes)
           for axes in copy_axes
       ]
-    device_fns = [
-        _per_device(fn, copy_axes[i], n, i == last) for i, fn in enumerate(stage_fns)
-    ]
+    if per_device == "vmap":
+      device_fns = [
+          _per_device(fn, copy_axes[i], n, i == last) for i, fn in enumerate(stage_fns)
+      ]
+    else:
+      device_fns = [
+          _per_device_manual(fn, copy_axes[i], mesh, i == last)
+          for i, fn in enumerate(stage_fns)
+      ]
 
   def loss_and_grads(stage_params, tokens, targets):
     if copy_axes is None:

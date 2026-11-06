@@ -73,6 +73,10 @@ pip install --no-deps -e ${JAXTITAN_ROOT}/src/shardy/shardy/integrations/python/
 # Optional, for TE operators: the ROCm/maxtext nightly TE wheel of 2026-11-02
 # (TE 199f548960fa). It pins jax==0.12.0; --no-deps keeps the jax built above.
 pip install --no-deps "https://github.com/ROCm/maxtext/releases/download/te-rocm-wheels-2026-11-02-199f548960fa/transformer_engine-2.20.0.dev0%2B199f54896-1.mi355-cp312-cp312-linux_x86_64.whl"
+# Optional, for JAX-AITER operators: build the submodule against this jaxlib
+# (prebuilt AITER JIT libraries, about two minutes).
+git submodule update --init --recursive third_party/jax-aiter
+scripts/build_jax_aiter.sh
 ```
 
 `--system-site-packages` exposes the container's TheRock `rocm` wheels. In
@@ -128,6 +132,12 @@ python examples/maxdiffusion_flux_parity.py --platform=cpu
 # CPU tests: every schedule and layout against jax.jit, and checkpoint resume.
 python -m pytest tests/
 
+# Operator providers against native JAX on MI355X: outputs and gradients, on one
+# GPU, under vmap, sharded, inside shard_map and inside an MPMD step, plus
+# timings. Run TE and JAX-AITER in separate processes (see docs/pipelines.md).
+python -m jaxtitan.ops.conformance --providers=te,te_mxfp8,te_fp8
+python -m jaxtitan.ops.conformance --providers=aiter --modes=bench
+
 # Llama 3.1 8B, 2 stages x 4 MI355X, zero-bubble schedule, WikiText-103.
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
   --model=llama3.1-8b --num_stages=2 \
@@ -163,6 +173,14 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 `--model_overrides` takes a JSON object of MaxText config or FLUX.1
 transformer settings, for example
 `'{"base_num_decoder_layers": 4}'` for a 4-layer MaxText model.
+
+`--ops` picks operator providers per op, with native JAX as the fallback:
+`--ops=attention=te` runs TE's fused attention, and
+`--ops=attention=te,linear=te_fp8,swiglu=te_fp8` adds FP8 GEMMs. Providers
+whose kernels cannot run under `jax.vmap` (TE's GEMMs, all of JAX-AITER) need
+`--per_device=shard_map` when gradients are reduced per step; without it they
+fall back to native, and the trainer prints what each op ran on after
+compiling.
 
 [pipelines.md](pipelines.md) describes the schedules, the layouts inside a
 stage (`--stage_fsdp`, `--tensor_parallel`, `--stage_layers`) and

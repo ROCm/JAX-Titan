@@ -39,7 +39,14 @@ later comparison: do not import from it or edit it.
   constraints. With `microbatch`, stage functions constrain activations at
   stage boundaries.
 - **Operators:** models call semantic ops from `jaxtitan.ops` (`attention`,
-  `rms_norm`, `swiglu`), never a kernel library directly.
+  `rms_norm`, `swiglu`, `linear`), never a kernel library directly.
+  Providers (`ops/providers/`: TE, JAX-AITER) are picked per op by the
+  policy (`--ops`) while tracing, with `native` as the fallback. A provider
+  op declines, through `supports()`, any call it cannot run correctly:
+  wrong dtype or shape, under `jax.vmap` without a working batching rule,
+  or JAX-AITER attention next to TE. It never fails or returns wrong values
+  silently. A new provider op passes `python -m jaxtitan.ops.conformance`
+  in every mode before a policy uses it.
 - **MaxText models:** `models/adapters/maxtext.py` builds stages from
   MaxText's own layers at the pinned release (`maxtext==0.2.5`, the
   `maxtext` extra). MaxText's layers constrain activations on the mesh they
