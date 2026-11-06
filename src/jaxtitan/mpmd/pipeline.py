@@ -99,13 +99,14 @@ def make_config(
 def pipeline_loss(
     stage_fns: Sequence[Callable[..., jax.Array]],
     stage_params: Sequence,
-    tokens: jax.Array,
-    targets: jax.Array,
+    tokens,
+    targets,
 ) -> jax.Array:
   """Mean loss over microbatches of [microbatches, batch, seq] inputs.
 
-  Stage `i` is called as `stage_fns[i](params, x)`; the last stage also takes
-  the targets and returns the microbatch loss.
+  `tokens` and `targets` may also be pytrees of arrays that each lead with the
+  microbatch axis. Stage `i` is called as `stage_fns[i](params, x)`; the last
+  stage also takes the targets and returns the microbatch loss.
   """
   last = len(stage_fns) - 1
 
@@ -116,11 +117,12 @@ def pipeline_loss(
       x = mpmd.named_computation(fn, name=stage_name(i))(*args)
     return x
 
-  num_microbatches = tokens.shape[0]
+  num_microbatches = jax.tree.leaves(tokens)[0].shape[0]
   total = 0.0
   for m in range(num_microbatches):
     total = total + mpmd.call(one_microbatch, call_counter=m)(
-        stage_params, tokens[m], targets[m]
+        stage_params, jax.tree.map(lambda a, m=m: a[m], tokens),
+        jax.tree.map(lambda a, m=m: a[m], targets),
     )
   return total / num_microbatches
 
