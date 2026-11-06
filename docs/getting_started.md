@@ -33,6 +33,20 @@ jax's `MODULE.bazel` can pin an older XLA than the fix; the build script
 overrides it with the `xla` tree, and the Shardy that XLA pins with the
 patched `shardy` tree.
 
+The operator providers JAX-AITER and JAX-Triton are git submodules in
+`third_party/`, pinned to tested commits. Building JAX-AITER also needs its
+own AITER submodule:
+
+```bash
+git submodule update --init third_party/jax-aiter third_party/jax-triton
+git submodule update --init --recursive third_party/jax-aiter   # with AITER
+```
+
+Transformer Engine is not built from source: ROCm/maxtext publishes nightly
+ROCm TransformerEngine wheels for ROCm 10.1, Python 3.12 and MI355X on its
+[releases page](https://github.com/ROCm/maxtext/releases); step 4 installs
+one.
+
 ## 3. Build
 
 Inside the container, build the `jax`, `jaxlib`, `jax-rocm-plugin` and
@@ -56,6 +70,9 @@ pip install $D/jax-*.whl $D/jaxlib-*.whl
 pip install --no-deps $D/jax_rocm10_plugin-*.whl $D/jax_rocm10_pjrt-*.whl
 pip install optax tiktoken pyarrow jaxtyping absl-py immutabledict typing_extensions chex
 pip install --no-deps -e ${JAXTITAN_ROOT}/src/shardy/shardy/integrations/python/jax/mpmd
+# Optional, for TE operators: the ROCm/maxtext nightly TE wheel of 2026-11-02
+# (TE 199f548960fa). It pins jax==0.12.0; --no-deps keeps the jax built above.
+pip install --no-deps "https://github.com/ROCm/maxtext/releases/download/te-rocm-wheels-2026-11-02-199f548960fa/transformer_engine-2.20.0.dev0%2B199f54896-1.mi355-cp312-cp312-linux_x86_64.whl"
 ```
 
 `--system-site-packages` exposes the container's TheRock `rocm` wheels. In

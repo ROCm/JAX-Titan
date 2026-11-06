@@ -92,6 +92,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
 | `third_party/patches/` | jaxlib and Shardy patches |
 | `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
+| `third_party/jax-aiter/`, `third_party/jax-triton/` | JAX-AITER and JAX-Triton (git submodules), for the operator providers |
 
 ## Roadmap
 
@@ -104,7 +105,9 @@ JAX-Titan on AMD's SPUR cluster.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Two directories keep the Apache License 2.0:
+MIT, see [LICENSE](LICENSE). The submodules in `third_party/` keep their own
+licenses (JAX-AITER MIT, JAX-Triton Apache-2.0), and two directories keep
+the Apache License 2.0:
 
 - `src/jaxpp/`: the original JaxPP project, with its own `LICENSE` and file
   headers.
