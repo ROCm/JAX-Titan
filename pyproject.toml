@@ -25,6 +25,27 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["chex", "pytest"]
+# MaxText models (jaxtitan.models.adapters.maxtext). The maxtext package
+# declares no dependencies; these are what its model code imports.
+maxtext = [
+    "maxtext==0.2.5",
+    "aqtp",
+    "drjax>=0.2.1",
+    "flax",
+    "grain",
+    "huggingface_hub",
+    "jinja2",
+    "omegaconf",
+    "pathwaysutils>=0.1.11",
+    "pillow",
+    "psutil",
+    "pydantic",
+    "qwix>=0.1.6",
+    "sentencepiece",
+    "sympy",
+    "tokamax>=0.0.14,!=0.1.0",
+    "transformers>=5.8.0",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "jaxtitan.__version__"}

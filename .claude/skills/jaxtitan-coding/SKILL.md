@@ -40,6 +40,12 @@ later comparison: do not import from it or edit it.
   stage boundaries.
 - **Operators:** models call semantic ops from `jaxtitan.ops` (`attention`,
   `rms_norm`, `swiglu`), never a kernel library directly.
+- **MaxText models:** `models/adapters/maxtext.py` builds stages from
+  MaxText's own layers at the pinned release (`maxtext==0.2.5`, the
+  `maxtext` extra). MaxText's layers constrain activations on the mesh they
+  are built with, so build them on one stage mesh and reduce gradients per
+  microbatch. Stage parameters keep MaxText's names and layer axis;
+  `llama_params` maps Llama weights onto `models/llama.py`.
 - **Precision:** parameters and optimizer state are fp32; compute casts to
   bf16 before the layer scan. Casting inside the rematerialized layer was
   measured slower; do not move it back without a new A/B.
@@ -57,6 +63,9 @@ later comparison: do not import from it or edit it.
   (`rtol=1e-5` over 4 steps).
 - Resume behavior is tested in `tests/test_checkpoint.py`: a resumed run must
   equal the uninterrupted one exactly on CPU.
+- `tests/test_maxtext_adapter.py` checks MaxText's model, `models/llama.py`
+  and the pipeline step against each other; run it after changing either
+  model (it is skipped without the `maxtext` extra).
 - A performance claim needs a GPU run on an idle node against the
   no-pipeline baseline from the same stack (see `jaxtitan-training`), with
   its JSONL in `docs/results/<date>/`.
