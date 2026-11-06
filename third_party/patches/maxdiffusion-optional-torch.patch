@@ -1,0 +1,21 @@
+diff --git a/src/maxdiffusion/models/modeling_flax_utils.py b/src/maxdiffusion/models/modeling_flax_utils.py
+index 935c6b39..173417c0 100644
+--- a/src/maxdiffusion/models/modeling_flax_utils.py
++++ b/src/maxdiffusion/models/modeling_flax_utils.py
+@@ -39,8 +39,6 @@ from ..utils import (
+     logging,
+ )
+ 
+-from .modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
+-
+ 
+ logger = logging.get_logger(__name__)
+ _ACTIVATIONS = {
+@@ -423,6 +421,7 @@ class FlaxModelMixin(PushToHubMixin):
+     if from_pt:
+       if is_torch_available():
+         from .modeling_utils import load_state_dict
++        from .modeling_flax_pytorch_utils import convert_pytorch_state_dict_to_flax
+       else:
+         raise EnvironmentError(
+             "Can't load the model in PyTorch format because PyTorch is not installed. "

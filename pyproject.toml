@@ -46,6 +46,20 @@ maxtext = [
     "tokamax>=0.0.14,!=0.1.0",
     "transformers>=5.8.0",
 ]
+# MaxDiffusion FLUX.1 (jaxtitan.models.adapters.maxdiffusion): what its model
+# code imports. MaxDiffusion itself comes from a patched checkout; see
+# docs/getting_started.md.
+maxdiffusion = [
+    "aqtp",
+    "einops",
+    "flax",
+    "google-cloud-storage",
+    "huggingface_hub",
+    "pillow",
+    "pyyaml",
+    "requests",
+    "tensorboardx",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "jaxtitan.__version__"}

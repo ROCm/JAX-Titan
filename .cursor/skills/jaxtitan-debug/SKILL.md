@@ -22,6 +22,7 @@ upstream. Never work around an upstream bug inside `src/jaxtitan`.
 | jaxlib (`sdy_mpmd.cc`, `py_mpmd_loaded_executable.cc`) | `${JAXTITAN_ROOT}/src/jax` | `third_party/patches/jaxlib-*.patch` |
 | Shardy MPMD: Python API, partitioner, jaxlib glue (`mpmd_program.cc`) | `${JAXTITAN_ROOT}/src/shardy` | `third_party/patches/shardy-*.patch` |
 | XLA: IFRT IR (`xla/python/ifrt/ir`), PJRT (`xla/pjrt`), GPU compiler, ROCm profiler | `${JAXTITAN_ROOT}/src/xla` | `third_party/patches/xla-*.patch` (none today) |
+| MaxDiffusion model code (MaxText needs no patch today) | `${JAXTITAN_ROOT}/src/maxdiffusion` | `third_party/patches/maxdiffusion-*.patch` |
 | ROCm, RCCL, driver | none | File an issue; work around only in the environment |
 
 ## Finding the Owner
@@ -48,6 +49,8 @@ JAX-Titan bug; fix the caller.
 | `ModuleNotFoundError: mlir` from Shardy's `jit.py` | Shardy OSS import | `shardy-mpmd-oss-mlir-import.patch` |
 | A partitioning option has no effect | jaxlib's `ParsePartitioningOptions` dropped it | `shardy-mpmd-parse-partitioning-options.patch`; check Shardy's log of the per-mesh fragment order |
 | Microbatch 0's backward runs last in 1F1B | Optimizer update merged before scheduling | `mpmd_merge_inferred_after_scheduling` (default in `make_config`) |
+| `No module named 'torch'` importing MaxDiffusion's FLUX.1 | MaxDiffusion imports its PyTorch weight converter at module level | `maxdiffusion-optional-torch.patch` |
+| FLUX.1-dev fails with a broadcast error in `time_text_embed` or its first block | MaxDiffusion embeds timestep and guidance twice since `64450df4` | `maxdiffusion-flux1-guidance-embedding.patch` |
 | `Input signature does not match the signature of the compiled function` at step 1 | Input shardings differ from what the executable returns, e.g. `P(None, None)` against `P()` | Build specs with `jaxtitan.parallel.spec`, which drops trailing Nones |
 | `Received incompatible devices` from a sharding constraint | Constraints in one MPMD program name different meshes | Use one stage mesh for every constraint |
 | Step 0 hangs in `Initialize clique` | Another job on the same GPUs | Run on an idle node |
