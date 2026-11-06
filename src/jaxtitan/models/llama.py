@@ -15,6 +15,16 @@ from jaxtitan import ops
 
 
 @dataclasses.dataclass(frozen=True)
+class Llama31RopeScaling:
+  """Llama 3.1's RoPE frequency scaling for contexts past `original_context`."""
+
+  factor: float = 8.0
+  low_freq_factor: float = 1.0
+  high_freq_factor: float = 4.0
+  original_context: int = 8192
+
+
+@dataclasses.dataclass(frozen=True)
 class LlamaConfig:
   vocab_size: int
   emb_dim: int
@@ -25,6 +35,7 @@ class LlamaConfig:
   mlp_dim: int
   norm_eps: float = 1e-5
   rope_theta: float = 500_000.0
+  rope_scaling: Llama31RopeScaling | None = None
 
   def num_params(self) -> int:
     e, f, d = self.emb_dim, self.mlp_dim, self.head_dim
@@ -43,6 +54,7 @@ FLAVORS = {
     "llama3.1-8b": LlamaConfig(
         vocab_size=128256, emb_dim=4096, num_layers=32, num_query_heads=32,
         num_kv_heads=8, head_dim=128, mlp_dim=14336,
+        rope_scaling=Llama31RopeScaling(),
     ),
     "llama3-test": LlamaConfig(
         vocab_size=128256, emb_dim=256, num_layers=4, num_query_heads=8,
@@ -161,10 +173,22 @@ def merge_stage_params(stage_params: Sequence[dict]) -> dict:
   }
 
 
-def _rope(x: jax.Array, theta: float) -> jax.Array:
+def _rope_freqs(cfg: LlamaConfig) -> jax.Array:
+  dim = cfg.head_dim
+  freqs = cfg.rope_theta ** (-jnp.arange(0, dim, 2, dtype=jnp.float32) / dim)
+  s = cfg.rope_scaling
+  if s is None:
+    return freqs
+  wavelen = 2 * jnp.pi / freqs
+  smooth = (s.original_context / wavelen - s.low_freq_factor) / (s.high_freq_factor - s.low_freq_factor)
+  blended = (1 - smooth) * freqs / s.factor + smooth * freqs
+  scaled = jnp.where(wavelen > s.original_context / s.low_freq_factor, freqs / s.factor, blended)
+  return jnp.where(wavelen < s.original_context / s.high_freq_factor, freqs, scaled)
+
+
+def _rope(x: jax.Array, freqs: jax.Array) -> jax.Array:
   """Rotary embedding on [batch, seq, heads, head_dim], split-halves layout."""
-  seq, dim = x.shape[1], x.shape[-1]
-  freqs = theta ** (-jnp.arange(0, dim, 2, dtype=jnp.float32) / dim)
+  seq = x.shape[1]
   angles = jnp.arange(seq, dtype=jnp.float32)[:, None] * freqs[None, :]
   sin = jnp.sin(angles)[None, :, None, :]
   cos = jnp.cos(angles)[None, :, None, :]
@@ -179,7 +203,8 @@ def _decoder_layer(cfg: LlamaConfig, h: jax.Array, p: dict) -> jax.Array:
   q = (x @ p["wq"]).reshape(b, s, cfg.num_query_heads, cfg.head_dim)
   k = (x @ p["wk"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
   v = (x @ p["wv"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
-  q, k = _rope(q, cfg.rope_theta), _rope(k, cfg.rope_theta)
+  freqs = _rope_freqs(cfg)
+  q, k = _rope(q, freqs), _rope(k, freqs)
   attn = ops.attention(q, k, v).reshape(b, s, cfg.num_query_heads * cfg.head_dim)
   h = h + attn @ p["wo"]
   x = ops.rms_norm(h, p["mlp_norm"], cfg.norm_eps)
