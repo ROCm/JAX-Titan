@@ -200,13 +200,13 @@ def _rope(x: jax.Array, freqs: jax.Array) -> jax.Array:
 def _decoder_layer(cfg: LlamaConfig, h: jax.Array, p: dict) -> jax.Array:
   b, s, _ = h.shape
   x = ops.rms_norm(h, p["attn_norm"], cfg.norm_eps)
-  q = (x @ p["wq"]).reshape(b, s, cfg.num_query_heads, cfg.head_dim)
-  k = (x @ p["wk"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
-  v = (x @ p["wv"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
+  q = ops.linear(x, p["wq"]).reshape(b, s, cfg.num_query_heads, cfg.head_dim)
+  k = ops.linear(x, p["wk"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
+  v = ops.linear(x, p["wv"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
   freqs = _rope_freqs(cfg)
   q, k = _rope(q, freqs), _rope(k, freqs)
   attn = ops.attention(q, k, v).reshape(b, s, cfg.num_query_heads * cfg.head_dim)
-  h = h + attn @ p["wo"]
+  h = h + ops.linear(attn, p["wo"])
   x = ops.rms_norm(h, p["mlp_norm"], cfg.norm_eps)
   return h + ops.swiglu(x, p["w_gate"], p["w_up"], p["w_down"])
 
