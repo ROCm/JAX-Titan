@@ -30,6 +30,9 @@ This is the target design; [What works](#what-works) lists what runs today.
   into another layout of the same stages.
 - Llama 3 models using MaxText's `llama3.1-8b` configuration, WikiText-103
   with the Llama 3 tokenizer, and throughput and MFU reporting.
+- MaxText models as pipeline stages, built from MaxText 0.2.5's own layers
+  (Llama 2 and 3 so far). They match MaxText's model and, with the weights
+  mapped, JAX-Titan's Llama.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
 - A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
@@ -81,13 +84,13 @@ JAX-Titan on AMD's SPUR cluster.
 |---|---|
 | `src/jaxtitan/mpmd` | Topology, Shardy MPMD config and pipelined train steps |
 | `src/jaxtitan/parallel` | DP, FSDP and TP shardings from logical parameter axes |
-| `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage |
+| `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText models (`adapters/`) |
 | `src/jaxtitan/ops` | Semantic operators (native JAX today) |
 | `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
 | `src/jaxtitan/trainer` | Training entry point (`python -m jaxtitan.trainer.train`) and Orbax checkpoints |
 | `src/jaxtitan/observability` | Per-GPU busy and idle time from profiler traces |
 | `examples/` | MPMD spike and parity checks |
-| `tests/` | CPU tests: schedules and layouts against `jax.jit`, checkpoint resume |
+| `tests/` | CPU tests: schedules and layouts against `jax.jit`, checkpoint resume, MaxText models |
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
 | `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
 | `third_party/patches/` | jaxlib and Shardy patches |

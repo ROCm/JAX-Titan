@@ -78,6 +78,15 @@ pip install --no-deps "https://github.com/ROCm/maxtext/releases/download/te-rocm
 `--system-site-packages` exposes the container's TheRock `rocm` wheels. In
 every new shell, run `source scripts/env.sh`.
 
+For MaxText models, install the `maxtext` extra from the repository root:
+MaxText 0.2.5 and the packages its model code imports. Naming the installed
+jax and jaxlib keeps pip from replacing the ones built above.
+
+```bash
+pip install -e ".[maxtext]" "jax==$(python -c 'import jax; print(jax.__version__)')" \
+  "jaxlib==$(python -c 'import jaxlib; print(jaxlib.__version__)')"
+```
+
 ## 5. Runs
 
 The node is shared, so check it is idle on the host first:
@@ -92,6 +101,10 @@ python examples/mpmd_two_mesh_spike.py --platform=rocm
 
 # Llama pipeline step (microbatches, 1F1B) against a single-mesh reference.
 python examples/llama_mpmd_parity.py --platform=cpu
+
+# MaxText Llama 3.1 stages against MaxText's model, JAX-Titan's Llama and a
+# single-mesh reference (needs the maxtext extra).
+python examples/maxtext_llama_parity.py --platform=cpu
 
 # CPU tests: every schedule and layout against jax.jit, and checkpoint resume.
 python -m pytest tests/
