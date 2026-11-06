@@ -77,6 +77,9 @@ class WindowSampler:
   def state(self) -> dict:
     return {"seed": self.seed, "step": self.step}
 
+  def max_token(self) -> int:
+    return int(self._tokens.max())
+
 
 if __name__ == "__main__":
   from jaxtitan import paths  # pylint: disable=g-import-not-at-top
