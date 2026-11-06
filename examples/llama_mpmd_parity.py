@@ -36,6 +36,7 @@ def parse_args(argv=None):
       "with steps, so long runs need more.",
   )
   parser.add_argument("--reduce_grads", default="step", choices=["microbatch", "step"])
+  parser.add_argument("--per_device", default="vmap", choices=["vmap", "shard_map"])
   parser.add_argument("--stage_fsdp", action="store_true")
   parser.add_argument("--tensor_parallel", type=int, default=1)
   return parser.parse_args(argv)
@@ -138,7 +139,7 @@ def main(argv=None):
     copy_axes = [llama.device_copy_axes(p) for p in host_params]
   train_step = jt_mpmd.make_train_step(
       stage_fns, optimizer, copy_axes=copy_axes,
-      param_specs=[s[0] for s in specs], mesh=meshes[0],
+      param_specs=[s[0] for s in specs], mesh=meshes[0], per_device=args.per_device,
   )
   compiled = mpmd.jit(
       train_step, config,
