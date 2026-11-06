@@ -43,12 +43,19 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" timeout -s KILL 1800 python -m jaxtitan.tra
   --seq_len=2048 --steps=30 --log_file=$LOG.jsonl > $LOG.out 2>&1
 
 # The same step without a pipeline: --parallel=dp or --parallel=fsdp.
+
+# Models from MaxText and MaxDiffusion (FLUX.1 trains on synthetic batches).
+... --model=maxtext:llama3.1-8b --num_stages=2 ...
+... --model=maxdiffusion:flux-dev --num_stages=4 --steps=20 --lr=1e-5 ...
 ```
 
 Layout flags: `--schedule`, `--stage_fsdp`, `--tensor_parallel`,
 `--stage_layers`, `--stages_per_mesh`, `--reduce_grads`. Checkpoints:
 `--checkpoint_dir`, `--checkpoint_every`; rerunning resumes. See
-`docs/pipelines.md`.
+`docs/pipelines.md`. `maxtext:` and `maxdiffusion:` models support only data
+parallelism inside stages with gradients reduced per microbatch (the
+default for them); `--stage_layers` counts their decoder layers or FLUX.1
+blocks, and `--model_overrides` takes JSON config overrides.
 
 ## Monitor
 
@@ -63,7 +70,9 @@ Layout flags: `--schedule`, `--stage_fsdp`, `--tensor_parallel`,
     another job uses the same GPUs and does not recover. Stop the run, check
     `rocm-smi --showpids`, and rerun on an idle node.
   - `RESOURCE_EXHAUSTED` in a fragment such as `p33_stage1_fwd_call15`: use
-    fewer microbatches, `--stage_fsdp`, or `--tensor_parallel`.
+    fewer microbatches, `--stage_fsdp`, or `--tensor_parallel`. FLUX.1-dev
+    needs 4 stages: on 2, the first stage's 7.9B parameters with fp32 AdamW
+    state reach 272 GiB per GPU.
   - `Input signature does not match the signature of the compiled function`
     at step 1: see `jaxtitan-debug`.
   - A non-finite loss: the trainer raises `FloatingPointError`; stop and

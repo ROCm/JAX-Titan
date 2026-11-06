@@ -66,11 +66,7 @@ def main(argv=None):
   host_params = jax.device_get(model.init(seed=0))
 
   side, text_tokens = 4, 8
-  img_ids = np.zeros((side, side, 3), np.float32)
-  img_ids[..., 1] = np.arange(side)[:, None]
-  img_ids[..., 2] = np.arange(side)[None, :]
-  img_ids = img_ids.reshape(side * side, 3)
-  txt_ids = np.zeros((text_tokens, 3), np.float32)
+  img_ids, txt_ids = md.position_ids(side, text_tokens)
   rng = np.random.default_rng(0)
 
   def example(*lead):

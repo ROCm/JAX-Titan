@@ -1,29 +1,43 @@
-"""Pretrains a Llama model with Shardy MPMD pipeline parallelism.
+"""Pretrains a model with Shardy MPMD pipeline parallelism.
 
   python -m jaxtitan.trainer.train --model=llama3.1-8b --num_stages=2
 
-`--parallel=dp` and `--parallel=fsdp` train the same model on the same batches
+`--model` is a JAX-Titan Llama flavor, `maxtext:<MaxText model>` such as
+`maxtext:llama3.1-8b`, or `maxdiffusion:flux-dev` (see
+`jaxtitan.trainer.adapters`).
+
+`--parallel=dp` and `--parallel=fsdp` train the same Llama on the same batches
 without the pipeline, as one `jax.jit` program over all devices.
 
 With `--checkpoint_dir`, training resumes from the latest checkpoint there.
 """
 
 import argparse
-import dataclasses
 import functools
 import json
 import os
 import time
-from typing import Any, Callable
 
 from jaxtitan import paths
+from jaxtitan.trainer.layout import Layout
+from jaxtitan.trainer.layout import Workload
+from jaxtitan.trainer.layout import abstract
 
 _NORM_PARAMS = ("attn_norm", "mlp_norm", "final_norm")
 
 
 def parse_args(argv=None):
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--model", default="llama3.1-8b")
+  parser.add_argument(
+      "--model", default="llama3.1-8b",
+      help="A Llama flavor (llama3.1-8b, llama3-test), maxtext:<MaxText model "
+      "name>, or maxdiffusion:flux-dev or maxdiffusion:flux-schnell.",
+  )
+  parser.add_argument(
+      "--model_overrides", default="",
+      help="JSON object of model config overrides for maxtext: and "
+      "maxdiffusion: models, e.g. '{\"base_num_decoder_layers\": 4}'.",
+  )
   parser.add_argument(
       "--parallel", default="mpmd", choices=["mpmd", "dp", "fsdp"],
       help="mpmd: Shardy MPMD pipeline, data parallel inside each stage. "
@@ -56,10 +70,11 @@ def parse_args(argv=None):
       '\'{"mpmd_merge_inferred_after_scheduling": true}\'.',
   )
   parser.add_argument(
-      "--reduce_grads", default="step", choices=["microbatch", "step"],
+      "--reduce_grads", default=None, choices=["microbatch", "step"],
       help="When mpmd stages sum gradients across their data-parallel ranks: "
       "in every microbatch's backward pass, or once per step from per-rank "
-      "parameter copies.",
+      "parameter copies. Default: step for Llama flavors, microbatch for "
+      "maxtext: and maxdiffusion: models, which support only that.",
   )
   parser.add_argument(
       "--stage_fsdp", action="store_true",
@@ -77,13 +92,24 @@ def parse_args(argv=None):
       "ranks. dp and fsdp run all microbatches as one batch.",
   )
   parser.add_argument("--seq_len", type=int, default=2048)
+  parser.add_argument(
+      "--resolution", type=int, default=1024,
+      help="maxdiffusion: image side in pixels; FLUX.1 sees (resolution / 16)^2 "
+      "latent tokens.",
+  )
+  parser.add_argument(
+      "--text_tokens", type=int, default=0,
+      help="maxdiffusion: T5 tokens per sample; default 512 for flux-dev and "
+      "256 for flux-schnell.",
+  )
   parser.add_argument("--steps", type=int, default=50)
   parser.add_argument("--lr", type=float, default=3e-4)
   parser.add_argument("--warmup_steps", type=int, default=10)
   parser.add_argument(
       "--data",
       default=str(paths.work_dir() / "data/wikitext103_train.llama3.bin"),
-      help="uint32 token file, or 'synthetic'.",
+      help="uint32 token file, or 'synthetic'. maxdiffusion: models always "
+      "train on synthetic batches.",
   )
   parser.add_argument("--remat", action=argparse.BooleanOptionalAction, default=True)
   parser.add_argument(
@@ -112,42 +138,20 @@ def parse_args(argv=None):
   return parser.parse_args(argv)
 
 
-@dataclasses.dataclass
-class Layout:
-  """How the training state is placed and stepped.
-
-  `abstract_state` has the tree structure, shapes, dtypes and shardings of
-  `init()`'s `(params, opt_state)`, so a checkpoint can be restored without
-  initializing first.
-  """
-
-  init: Callable[[], tuple]
-  abstract_state: tuple
-  step: Any
-  batch_spec: Any
-  put_batch: Callable
-  structure: str
-
-
 def _decay_mask(params):
+  """Weight decay for every parameter but norm weights (MaxText's and
+  MaxDiffusion's norms hold theirs as `scale`)."""
   import jax  # pylint: disable=g-import-not-at-top
 
-  return jax.tree_util.tree_map_with_path(
-      lambda path, _: not any(getattr(k, "key", None) in _NORM_PARAMS for k in path),
-      params,
-  )
+  def decays(path, _):
+    keys = [getattr(k, "key", None) for k in path]
+    return not any(k in _NORM_PARAMS or k == "scale" for k in keys)
+
+  return jax.tree_util.tree_map_with_path(decays, params)
 
 
 def _stage_layers(args):
   return tuple(int(n) for n in args.stage_layers.split(",")) if args.stage_layers else None
-
-
-def _abstract(shapes, shardings):
-  import jax  # pylint: disable=g-import-not-at-top
-
-  return jax.tree.map(
-      lambda x, s: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=s), shapes, shardings
-  )
 
 
 def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
@@ -229,8 +233,8 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
   param_shardings = tuple(s[0] for s in shardings)
   opt_shardings = tuple(s[1] for s in shardings)
   abstract_state = (
-      tuple(_abstract(shapes[i][0], param_shardings[i]) for i in range(num_stages)),
-      tuple(_abstract(shapes[i][1], opt_shardings[i]) for i in range(num_stages)),
+      tuple(abstract(shapes[i][0], param_shardings[i]) for i in range(num_stages)),
+      tuple(abstract(shapes[i][1], opt_shardings[i]) for i in range(num_stages)),
   )
 
   mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
@@ -260,7 +264,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
 
   batch_spec = jax.ShapeDtypeStruct((num_mb, mb, seq), jnp.int32)
   return Layout(
-      init, abstract_state, jitted, batch_spec, put_batch, f"mpmd:{num_stages}"
+      init, abstract_state, jitted, batch_spec, batch_spec, put_batch, f"mpmd:{num_stages}"
   )
 
 
@@ -336,7 +340,7 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
   batch = args.microbatches * args.microbatch_size
   batch_spec = jax.ShapeDtypeStruct((batch, args.seq_len), jnp.int32)
   return Layout(
-      init, _abstract(shapes, shardings), jitted, batch_spec, put_batch, "spmd"
+      init, abstract(shapes, shardings), jitted, batch_spec, batch_spec, put_batch, "spmd"
   )
 
 
@@ -356,24 +360,21 @@ def main(argv=None):
   from jaxtitan.data.text import WindowSampler  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
 
-  cfg = llama.FLAVORS[args.model]
+  adapter = ":" in args.model
+  if args.reduce_grads is None:
+    args.reduce_grads = "microbatch" if adapter else "step"
   devices = jax.devices()
   tp = f", tensor parallel {args.tensor_parallel}" if args.tensor_parallel > 1 else ""
   if args.parallel == "mpmd":
-    layout = (
+    description = (
         f"{args.num_stages} stages{' with FSDP' if args.stage_fsdp else ''}{tp} | "
         f"schedule={args.schedule or 'default'} | "
         f"gradients reduced per {args.reduce_grads}"
     )
     if args.mpmd_options:
-      layout += f" | {args.mpmd_options}"
+      description += f" | {args.mpmd_options}"
   else:
-    layout = f"{args.parallel} over {len(devices)} devices{tp}, no pipeline"
-  print(
-      f"jax {jax.__version__} | {len(devices)} x {devices[0].device_kind} | "
-      f"{args.model} ({cfg.num_params() / 1e9:.2f}B params) | {layout}",
-      flush=True,
-  )
+    description = f"{args.parallel} over {len(devices)} devices{tp}, no pipeline"
 
   lr = optax.warmup_cosine_decay_schedule(
       0.0, args.lr, args.warmup_steps, max(args.steps, args.warmup_steps + 1),
@@ -384,8 +385,26 @@ def main(argv=None):
       optax.adamw(lr, b1=0.9, b2=0.95, eps=1e-8, weight_decay=0.1, mask=_decay_mask),
   )
 
-  build = _build_mpmd if args.parallel == "mpmd" else _build_spmd
-  layout = build(args, cfg, devices, optimizer)
+  mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
+  if adapter:
+    from jaxtitan.trainer import adapters  # pylint: disable=g-import-not-at-top
+
+    layout, work = adapters.build(args, devices, optimizer)
+  else:
+    cfg = llama.FLAVORS[args.model]
+    build = _build_mpmd if args.parallel == "mpmd" else _build_spmd
+    layout = build(args, cfg, devices, optimizer)
+    work = Workload(
+        num_params=cfg.num_params(),
+        tokens_per_step=num_mb * mb * seq,
+        flops_per_step=cfg.flops_per_token(seq) * num_mb * mb * seq,
+        vocab_size=cfg.vocab_size,
+    )
+  print(
+      f"jax {jax.__version__} | {len(devices)} x {devices[0].device_kind} | "
+      f"{args.model} ({work.num_params / 1e9:.2f}B params) | {description}",
+      flush=True,
+  )
 
   ckpt = None
   start = 0
@@ -411,7 +430,7 @@ def main(argv=None):
     print(f"initialized params and optimizer state in {time.time() - t0:.1f}s", flush=True)
 
   t0 = time.time()
-  lowered = layout.step.lower(params, opt_states, layout.batch_spec, layout.batch_spec)
+  lowered = layout.step.lower(params, opt_states, layout.input_spec, layout.target_spec)
   t1 = time.time()
   compiled = lowered.compile()
   print(
@@ -419,16 +438,23 @@ def main(argv=None):
       flush=True,
   )
 
-  mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
-  if args.data == "synthetic":
+  if work.next_batch is not None:
+    next_batch = work.next_batch
+    print("data: synthetic", flush=True)
+  elif args.data == "synthetic":
 
     def next_batch(step):
       rng = np.random.default_rng((args.seed, step))
-      return rng.integers(0, cfg.vocab_size, (num_mb * mb, seq + 1), dtype=np.int32)
+      return rng.integers(0, work.vocab_size, (num_mb * mb, seq + 1), dtype=np.int32)
 
   else:
     sampler = WindowSampler(args.data, seq, seed=args.seed, step=start)
     print(f"data: {args.data} ({sampler.num_tokens / 1e6:.1f}M tokens)", flush=True)
+    if sampler.max_token() >= work.vocab_size:
+      raise ValueError(
+          f"{args.data} has token ids up to {sampler.max_token()}, beyond "
+          f"{args.model}'s vocabulary of {work.vocab_size}"
+      )
 
     def next_batch(step):
       assert sampler.step == step, (sampler.step, step)
@@ -441,8 +467,7 @@ def main(argv=None):
     }
 
   profile = [int(s) for s in args.profile_steps.split(":")] if args.profile_steps else None
-  tokens_per_step = num_mb * mb * seq
-  flops_per_step = cfg.flops_per_token(seq) * tokens_per_step
+  tokens_per_step, flops_per_step = work.tokens_per_step, work.flops_per_step
   peak_flops = len(devices) * args.peak_tflops_per_device * 1e12
   log = open(args.log_file, "a") if args.log_file else None
 

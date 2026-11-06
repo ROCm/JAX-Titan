@@ -145,7 +145,24 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
   --model=llama3.1-8b --parallel=dp \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
+
+# MaxText's Llama 3.1 8B, built from MaxText's layers (the maxtext extra), on
+# the same data and pipeline. Gradients are reduced per microbatch.
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --num_stages=2 \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
+
+# MaxDiffusion's FLUX.1-dev (12B) on synthetic 1024x1024 batches: noised
+# random latents and text embeddings, with the flow-matching loss. With 2
+# stages, the first holds 7.9B parameters and runs out of memory.
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxdiffusion:flux-dev --num_stages=4 \
+  --microbatches=8 --microbatch_size=4 --steps=20 --lr=1e-5
 ```
+
+`--model_overrides` takes a JSON object of MaxText config or FLUX.1
+transformer settings, for example
+`'{"base_num_decoder_layers": 4}'` for a 4-layer MaxText model.
 
 [pipelines.md](pipelines.md) describes the schedules, the layouts inside a
 stage (`--stage_fsdp`, `--tensor_parallel`, `--stage_layers`) and

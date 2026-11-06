@@ -32,10 +32,11 @@ This is the target design; [What works](#what-works) lists what runs today.
   with the Llama 3 tokenizer, and throughput and MFU reporting.
 - MaxText models as pipeline stages, built from MaxText 0.2.5's own layers
   (Llama 2 and 3 so far). They match MaxText's model and, with the weights
-  mapped, JAX-Titan's Llama.
+  mapped, JAX-Titan's Llama, and train with `--model=maxtext:<name>`.
 - MaxDiffusion's FLUX.1 (dev and schnell) as pipeline stages of its
   double- and single-stream blocks, with its flow-matching loss, matching
-  MaxDiffusion's transformer.
+  MaxDiffusion's transformer; `--model=maxdiffusion:flux-dev` trains it on
+  synthetic batches.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
 - A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
@@ -47,7 +48,9 @@ with the zero-bubble schedule, against 1.68 s with 1F1B. Without the
 pipeline, the same step as one `jax.jit` program takes 0.83 s with data
 parallelism and 0.80 s with FSDP, so on one node the pipeline is still 1.7x
 and 1.8x slower. [docs/pipelines.md](docs/pipelines.md) has every schedule and
-layout measured, and the reasons for the gap.
+layout measured, and the reasons for the gap. MaxText's Llama 3.1 8B runs the
+same pipeline at 2.03 s per step, with gradients reduced per microbatch, and
+FLUX.1-dev (12B) trains at 4.4 images/s at 1024x1024 on 4 stages of 2 GPUs.
 
 ```python
 from jaxtitan import mpmd as jt_mpmd

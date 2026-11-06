@@ -152,3 +152,47 @@ Earlier measurements on 2026-11-04 with 1F1B: reducing gradients once per
 step instead of in every microbatch made the step 1.3x faster (2.20 s to
 1.70 s) for 10-15 GiB more memory per GPU. Their logs are in
 [results](results).
+
+## MaxText and MaxDiffusion models (2026-11-06, 8x MI355X)
+
+`--model=maxtext:llama3.1-8b` builds the stages from MaxText 0.2.5's own
+layers, and `--model=maxdiffusion:flux-dev` from MaxDiffusion's FLUX.1
+transformer (`jaxtitan.trainer.adapters`). Attention is their native JAX
+implementation. Both reduce gradients in every microbatch's backward pass:
+MaxText's layers constrain activation shardings, and FLUX.1's stages pass
+tuples of activations, so neither has the per-rank parameter copies of
+`--reduce_grads=step` yet. Step times are medians over steps 5-29 (5-19 for
+FLUX.1), on the same stack as above. Per-step metrics are in
+[results/2026-11-06](results/2026-11-06).
+
+Llama 3.1 8B with 65,536 tokens per step on WikiText-103, 2 stages of 4 GPUs:
+
+| Model code | Schedule | Gradients reduced | Step | Tokens/s | MFU | Peak HBM per GPU |
+|---|---|---|---|---|---|---|
+| MaxText | Zero-bubble H1 | per microbatch | 2.028 s | 32.3k | 7.5% | 177-178 GiB |
+| MaxText | 1F1B | per microbatch | 2.013 s | 32.6k | 7.6% | 177-180 GiB |
+| JAX-Titan's Llama | Zero-bubble H1 | per microbatch | 2.106 s | 31.1k | 7.3% | 167 GiB |
+| JAX-Titan's Llama | Zero-bubble H1 | per step (default) | 1.459 s | 44.9k | 10.5% | 180-181 GiB |
+
+FLUX.1-dev (11.9B parameters) with 32 images of 1024x1024 per step (8
+microbatches of 4), each 4,096 latent and 512 text tokens, on synthetic
+rectified-flow batches, 4 stages of 2 GPUs with 15, 14, 14 and 14 blocks and
+zero-bubble H1: 7.269 s per step, 4.4 images/s (20.3k tokens/s) and 4.9% MFU,
+with 218, 120, 88 and 89 GiB peak HBM per GPU from the first stage to the
+last. The loss falls from 3.51 to 2.75 in 20 steps.
+
+- **MaxText's layers are as fast as JAX-Titan's Llama** when both reduce
+  gradients per microbatch: 4% faster here, for 10 GiB more memory per GPU.
+  MaxText initializes differently (step-0 loss 12.30 against 12.58); both
+  reach 7.2-7.5 after 30 steps.
+- **The gap to JAX-Titan's default, 1.39x, is the gradient reduction:**
+  all-reducing each stage's gradients in all 8 microbatches instead of once
+  per step. With that reduction, 1F1B and zero-bubble are within 1%.
+- **FLUX.1-dev does not fit in 2 stages of 4 GPUs.** The first of 2 stages
+  holds all 19 double-stream blocks, which carry 2.4 times the weights of a
+  single-stream block: 7.9B of the 11.9B parameters. With fp32 weights,
+  AdamW state and per-microbatch gradients, its GPUs reached 272 GiB at step
+  0 and ran out of memory at step 1, even with
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`. With 4 stages the first holds 5.1B.
+- Compiling took 53-54 s for the MaxText pipelines, 74-110 s for JAX-Titan's
+  Llama and 123 s for FLUX.1.

@@ -22,6 +22,7 @@ import functools
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
+import numpy as np
 from maxdiffusion.models.embeddings_flax import CombinedTimestepGuidanceTextProjEmbeddings
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 
@@ -49,6 +50,17 @@ def transformer(flavor: str, **overrides) -> FluxTransformer2DModel:
 def flow_matching_loss(pred: jax.Array, target: jax.Array) -> jax.Array:
   """MaxDiffusion's FLUX.1 loss: mean squared error to noise minus latents."""
   return jnp.mean((target.astype(jnp.float32) - pred.astype(jnp.float32)) ** 2)
+
+
+def position_ids(image_side: int, text_tokens: int) -> tuple[np.ndarray, np.ndarray]:
+  """`img_ids` [image_side**2, 3] and `txt_ids` [text_tokens, 3], as MaxDiffusion builds them.
+
+  Image token (row, column) has ids (0, row, column); text tokens have zeros.
+  """
+  img_ids = np.zeros((image_side, image_side, 3), np.float32)
+  img_ids[..., 1] = np.arange(image_side)[:, None]
+  img_ids[..., 2] = np.arange(image_side)[None, :]
+  return img_ids.reshape(-1, 3), np.zeros((text_tokens, 3), np.float32)
 
 
 def _embed(m, inputs: dict):
@@ -95,16 +107,15 @@ class Model:
   """MaxDiffusion's FLUX.1 transformer split into pipeline stages.
 
   `blocks` gives the blocks per stage, double-stream blocks first; the
-  default splits them evenly.
+  default splits them as evenly as possible, earlier stages taking the
+  extra blocks (FLUX.1's 57 into 29 and 28).
   """
 
   def __init__(self, flux: FluxTransformer2DModel, *, num_stages: int,
                blocks: Sequence[int] | None = None):
     total = flux.num_layers + flux.num_single_layers
     if blocks is None:
-      if total % num_stages:
-        raise ValueError(f"{total} blocks do not split evenly into {num_stages} stages")
-      blocks = (total // num_stages,) * num_stages
+      blocks = tuple(total // num_stages + (i < total % num_stages) for i in range(num_stages))
     if len(blocks) != num_stages or sum(blocks) != total or min(blocks) < 1:
       raise ValueError(f"stage blocks {tuple(blocks)} do not split {total} blocks")
     self.flux = flux
@@ -185,3 +196,19 @@ class Model:
     last = self.num_stages - 1
     fns.append(lambda p, x, t: flow_matching_loss(self.forward(last, p, x), t))
     return fns
+
+  def flops_per_sample(self, image_tokens: int, text_tokens: int) -> float:
+    """Training FLOPs per sample: 6 per weight and token, plus attention.
+
+    Every block applies its projections and MLP to each token once, in its
+    stream or in the joined sequence, and attends over the joined sequence.
+    """
+    f = self.flux
+    d = f.num_attention_heads * f.attention_head_dim
+    tokens = image_tokens + text_tokens
+    blocks = f.num_layers + f.num_single_layers
+    per_token = 4 * d * d + 2 * d * int(d * f.mlp_ratio)
+    weights = per_token * tokens * blocks + d * (
+        2 * f.in_channels * image_tokens + f.joint_attention_dim * text_tokens)
+    attention = 2 * tokens * tokens * d * blocks
+    return 6.0 * (weights + attention)
