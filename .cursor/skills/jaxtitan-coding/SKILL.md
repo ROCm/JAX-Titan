@@ -46,6 +46,11 @@ later comparison: do not import from it or edit it.
   are built with, so build them on one stage mesh and reduce gradients per
   microbatch. Stage parameters keep MaxText's names and layer axis;
   `llama_params` maps Llama weights onto `models/llama.py`.
+- **MaxDiffusion models:** `models/adapters/maxdiffusion.py` builds FLUX.1
+  stages from MaxDiffusion's transformer at commit `821afc36` with the
+  `third_party/patches/maxdiffusion-*.patch` patches. Stage boundaries carry
+  a tuple (image and text tokens, conditioning, rotary embeddings), so these
+  stages reduce gradients per microbatch.
 - **Precision:** parameters and optimizer state are fp32; compute casts to
   bf16 before the layer scan. Casting inside the rematerialized layer was
   measured slower; do not move it back without a new A/B.
@@ -66,6 +71,8 @@ later comparison: do not import from it or edit it.
 - `tests/test_maxtext_adapter.py` checks MaxText's model, `models/llama.py`
   and the pipeline step against each other; run it after changing either
   model (it is skipped without the `maxtext` extra).
+  `tests/test_maxdiffusion_adapter.py` does the same for FLUX.1 against
+  MaxDiffusion's transformer (skipped without MaxDiffusion).
 - A performance claim needs a GPU run on an idle node against the
   no-pipeline baseline from the same stack (see `jaxtitan-training`), with
   its JSONL in `docs/results/<date>/`.

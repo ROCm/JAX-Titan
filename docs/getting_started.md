@@ -87,6 +87,21 @@ pip install -e ".[maxtext]" "jax==$(python -c 'import jax; print(jax.__version__
   "jaxlib==$(python -c 'import jaxlib; print(jaxlib.__version__)')"
 ```
 
+For MaxDiffusion's FLUX.1, install MaxDiffusion from a checkout of the pinned
+commit with the `maxdiffusion-*` patches from `third_party/patches`, without
+its own requirements (PyTorch, TensorFlow and libtpu), then the
+`maxdiffusion` extra:
+
+```bash
+M=${JAXTITAN_ROOT}/src/maxdiffusion
+git clone https://github.com/AI-Hypercomputer/maxdiffusion $M
+git -C $M checkout 821afc364ac1889c1039112843f4f7a17c1bef7b
+git -C $M apply $PWD/third_party/patches/maxdiffusion-*.patch
+pip install --no-deps -e $M
+pip install -e ".[maxdiffusion]" "jax==$(python -c 'import jax; print(jax.__version__)')" \
+  "jaxlib==$(python -c 'import jaxlib; print(jaxlib.__version__)')"
+```
+
 ## 5. Runs
 
 The node is shared, so check it is idle on the host first:
@@ -105,6 +120,10 @@ python examples/llama_mpmd_parity.py --platform=cpu
 # MaxText Llama 3.1 stages against MaxText's model, JAX-Titan's Llama and a
 # single-mesh reference (needs the maxtext extra).
 python examples/maxtext_llama_parity.py --platform=cpu
+
+# MaxDiffusion FLUX.1-dev stages against MaxDiffusion's transformer and a
+# single-mesh reference (needs MaxDiffusion, see above).
+python examples/maxdiffusion_flux_parity.py --platform=cpu
 
 # CPU tests: every schedule and layout against jax.jit, and checkpoint resume.
 python -m pytest tests/

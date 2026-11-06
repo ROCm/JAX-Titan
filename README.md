@@ -33,6 +33,9 @@ This is the target design; [What works](#what-works) lists what runs today.
 - MaxText models as pipeline stages, built from MaxText 0.2.5's own layers
   (Llama 2 and 3 so far). They match MaxText's model and, with the weights
   mapped, JAX-Titan's Llama.
+- MaxDiffusion's FLUX.1 (dev and schnell) as pipeline stages of its
+  double- and single-stream blocks, with its flow-matching loss, matching
+  MaxDiffusion's transformer.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
 - A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
@@ -73,6 +76,10 @@ XLA needs no patch: ROCm support in the IFRT IR atom-program passes landed as
 [openxla/xla#52290](https://github.com/openxla/xla/pull/52290) (`dfca2c9`), so
 build against XLA `main` at or after that commit.
 
+The optional MaxDiffusion FLUX.1 stages need two MaxDiffusion patches, kept
+there too: one imports PyTorch only to load PyTorch weights, and one fixes
+FLUX.1-dev's timestep embedding at the pinned commit.
+
 [docs/getting_started.md](docs/getting_started.md) covers the TheRock
 container, the from-source JAX build and the Python environment.
 [docs/amd-jax-train-runbook](docs/amd-jax-train-runbook) covers running
@@ -84,16 +91,16 @@ JAX-Titan on AMD's SPUR cluster.
 |---|---|
 | `src/jaxtitan/mpmd` | Topology, Shardy MPMD config and pipelined train steps |
 | `src/jaxtitan/parallel` | DP, FSDP and TP shardings from logical parameter axes |
-| `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText models (`adapters/`) |
+| `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText and MaxDiffusion models (`adapters/`) |
 | `src/jaxtitan/ops` | Semantic operators (native JAX today) |
 | `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
 | `src/jaxtitan/trainer` | Training entry point (`python -m jaxtitan.trainer.train`) and Orbax checkpoints |
 | `src/jaxtitan/observability` | Per-GPU busy and idle time from profiler traces |
 | `examples/` | MPMD spike and parity checks |
-| `tests/` | CPU tests: schedules and layouts against `jax.jit`, checkpoint resume, MaxText models |
+| `tests/` | CPU tests: schedules and layouts against `jax.jit`, checkpoint resume, MaxText and MaxDiffusion models |
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
 | `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
-| `third_party/patches/` | jaxlib and Shardy patches |
+| `third_party/patches/` | jaxlib, Shardy and MaxDiffusion patches |
 | `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
 | `third_party/jax-aiter/`, `third_party/jax-triton/` | JAX-AITER and JAX-Triton (git submodules), for the operator providers |
 
@@ -123,5 +130,5 @@ the Apache License 2.0:
 
 - `src/jaxpp/`: the original JaxPP project, with its own `LICENSE` and file
   headers.
-- `third_party/patches/`: patches to jax and Shardy, which are Apache-2.0
-  projects. See [third_party/patches/README.md](third_party/patches/README.md).
+- `third_party/patches/`: patches to jax, Shardy and MaxDiffusion, which are
+  Apache-2.0 projects. See [third_party/patches/README.md](third_party/patches/README.md).
