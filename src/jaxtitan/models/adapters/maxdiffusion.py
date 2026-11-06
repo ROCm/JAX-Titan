@@ -23,6 +23,7 @@ from flax import linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
+from maxdiffusion.models.attention_flax import AttentionOp
 from maxdiffusion.models.embeddings_flax import CombinedTimestepGuidanceTextProjEmbeddings
 from maxdiffusion.models.flux.transformers.transformer_flux_flax import FluxTransformer2DModel
 
@@ -103,16 +104,34 @@ def _stage(m, x, *, first: bool, last: bool):
   return m.proj_out(m.norm_out(img, temb))
 
 
+def _attention_interceptor(attention: Callable):
+  """Routes MaxDiffusion's unmasked attention to `attention(q, k, v, causal=, scale=)`."""
+
+  def intercept(next_fun, args, kwargs, context):
+    if (not isinstance(context.module, AttentionOp) or context.method_name != "apply_attention"
+        or kwargs.get("attention_mask") is not None or len(args) > 3):
+      return next_fun(*args, **kwargs)
+    m = context.module
+    q, k, v = (x.reshape(x.shape[0], x.shape[1], m.heads, m.dim_head) for x in args[:3])
+    out = attention(q, k, v, causal=m.is_causal, scale=m.scale)
+    return out.reshape(out.shape[0], out.shape[1], m.heads * m.dim_head)
+
+  return intercept
+
+
 class Model:
   """MaxDiffusion's FLUX.1 transformer split into pipeline stages.
 
   `blocks` gives the blocks per stage, double-stream blocks first; the
   default splits them as evenly as possible, earlier stages taking the
-  extra blocks (FLUX.1's 57 into 29 and 28).
+  extra blocks (FLUX.1's 57 into 29 and 28). With `attention`, such as
+  `jaxtitan.ops.attention`, the blocks' attention runs there instead of in
+  MaxDiffusion's attention op.
   """
 
   def __init__(self, flux: FluxTransformer2DModel, *, num_stages: int,
-               blocks: Sequence[int] | None = None):
+               blocks: Sequence[int] | None = None, attention: Callable | None = None):
+    self._interceptor = None if attention is None else _attention_interceptor(attention)
     total = flux.num_layers + flux.num_single_layers
     if blocks is None:
       blocks = tuple(total // num_stages + (i < total % num_stages) for i in range(num_stages))
@@ -184,7 +203,10 @@ class Model:
     [batch, image_tokens, in_channels].
     """
     method = functools.partial(_stage, first=stage == 0, last=stage == self.num_stages - 1)
-    return self._stages[stage].apply({"params": params}, x, method=method)
+    if self._interceptor is None:
+      return self._stages[stage].apply({"params": params}, x, method=method)
+    with nn.intercept_methods(self._interceptor):
+      return self._stages[stage].apply({"params": params}, x, method=method)
 
   def stage_fns(self) -> list[Callable[..., jax.Array]]:
     """Stage functions for `jaxtitan.mpmd.make_train_step`.

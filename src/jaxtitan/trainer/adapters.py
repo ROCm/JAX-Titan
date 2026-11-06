@@ -57,6 +57,7 @@ def _mpmd_layout(args, topology, model, optimizer, inputs, targets, split_batch)
   """
   import jax  # pylint: disable=g-import-not-at-top
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
   P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name
@@ -92,7 +93,8 @@ def _mpmd_layout(args, topology, model, optimizer, inputs, targets, split_batch)
     return jax.tree.map(lambda v: v[0], specs, is_leaf=is_pair)
 
   in_sh, tgt_sh = shardings(inputs, meshes[0]), shardings(targets, meshes[-1])
-  train_step = jt_mpmd.make_train_step(model.stage_fns(), optimizer)
+  stage_fns = [ops.for_stage(fn, i) for i, fn in enumerate(model.stage_fns())]
+  train_step = jt_mpmd.make_train_step(stage_fns, optimizer)
   jitted = mpmd.jit(
       train_step,
       config,
@@ -153,6 +155,7 @@ def _maxdiffusion(args, flavor, devices, optimizer):
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from jaxtitan.models.adapters import maxdiffusion as md  # pylint: disable=g-import-not-at-top
 
   P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name
@@ -168,7 +171,10 @@ def _maxdiffusion(args, flavor, devices, optimizer):
   flux = md.transformer(flavor, **kwargs)
   topology = _topology(args, devices, lambda d: jax.sharding.Mesh(
       np.asarray(d).reshape(len(d), 1), (jt_mpmd.DATA_AXIS, jt_mpmd.TENSOR_AXIS)))
-  model = md.Model(flux, num_stages=args.num_stages, blocks=_stage_layers(args))
+  policy = ops.current_policy()
+  routed = "attention" in policy.prefs or any("attention" in s for s in policy.stages.values())
+  model = md.Model(flux, num_stages=args.num_stages, blocks=_stage_layers(args),
+                   attention=ops.attention if routed else None)
 
   side = args.resolution // 16
   image_tokens = side * side
