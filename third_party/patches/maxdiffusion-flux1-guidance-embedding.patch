@@ -1,0 +1,60 @@
+diff --git a/src/maxdiffusion/models/embeddings_flax.py b/src/maxdiffusion/models/embeddings_flax.py
+index 17ac2b07..1dbaee12 100644
+--- a/src/maxdiffusion/models/embeddings_flax.py
++++ b/src/maxdiffusion/models/embeddings_flax.py
+@@ -540,20 +540,28 @@ class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
+   pooled_projection_dim: int
+   guidance_embeds: bool = True
+   frequency_embedding_size: int = 256
++  # False when the caller passes timestep and guidance already projected to
++  # sinusoids, as FLUX.1 does.
++  project_timesteps: bool = True
+   dtype: jnp.dtype = jnp.float32
+   weights_dtype: jnp.dtype = jnp.float32
+   precision: jax.lax.Precision = None
+ 
++  def _project(self, t):
++    if not self.project_timesteps:
++      return t
++    return FlaxTimesteps(dim=self.frequency_embedding_size, flip_sin_to_cos=True, freq_shift=0)(t)
++
+   @nn.compact
+   def __call__(self, timestep, guidance, pooled_projection=None):
+-    timesteps_proj = FlaxTimesteps(dim=self.frequency_embedding_size, flip_sin_to_cos=True, freq_shift=0)(timestep)
++    timesteps_proj = self._project(timestep)
+     dtype = pooled_projection.dtype if pooled_projection is not None else jnp.float32
+     timestep_emb = FlaxTimestepEmbedding(
+         time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
+     )(timesteps_proj.astype(dtype))
+ 
+     if self.guidance_embeds and guidance is not None:
+-      guidance_proj = FlaxTimesteps(dim=self.frequency_embedding_size, flip_sin_to_cos=True, freq_shift=0)(guidance)
++      guidance_proj = self._project(guidance)
+       guidance_emb = FlaxTimestepEmbedding(
+           time_embed_dim=self.embedding_dim, dtype=self.dtype, weights_dtype=self.weights_dtype
+       )(guidance_proj.astype(dtype))
+diff --git a/src/maxdiffusion/models/flux/transformers/transformer_flux_flax.py b/src/maxdiffusion/models/flux/transformers/transformer_flux_flax.py
+index 2d536ca1..8610eff9 100644
+--- a/src/maxdiffusion/models/flux/transformers/transformer_flux_flax.py
++++ b/src/maxdiffusion/models/flux/transformers/transformer_flux_flax.py
+@@ -15,6 +15,7 @@ limitations under the License.
+ """
+ 
+ from typing import Any, Dict, Optional, Tuple, Union
++import functools
+ import jax
+ import math
+ import jax.numpy as jnp
+@@ -433,8 +434,11 @@ class FluxTransformer2DModel(nn.Module, FlaxModelMixin, ConfigMixin):
+ 
+     self.pe_embedder = FluxPosEmbed(theta=self.theta, axes_dim=self.axes_dims_rope, dtype=self.dtype)
+ 
++    # __call__ projects timestep and guidance itself.
+     text_time_guidance_cls = (
+-        CombinedTimestepGuidanceTextProjEmbeddings if self.guidance_embeds else CombinedTimestepTextProjEmbeddings
++        functools.partial(CombinedTimestepGuidanceTextProjEmbeddings, project_timesteps=False)
++        if self.guidance_embeds
++        else CombinedTimestepTextProjEmbeddings
+     )
+ 
+     self.time_text_embed = text_time_guidance_cls(
