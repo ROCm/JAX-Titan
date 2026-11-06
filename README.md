@@ -101,8 +101,12 @@ JAX-Titan on AMD's SPUR cluster.
   at `821afc36`. JAX-Titan takes their model definitions, configs and
   checkpoint converters, and replaces their trainers, sharding and TPU kernels
   with its own.
-- Operator providers: ROCm Transformer Engine, JAX-AITER, jax-triton, MORI-EP
-  for MoE dispatch/combine, and FlyDSL later.
+- Operator providers behind `jaxtitan.ops`, each checked against its native
+  JAX ops, in this order: ROCm Transformer Engine, from the nightly ROCm TE
+  wheels that ROCm/maxtext publishes; JAX-AITER; JAX-Triton, for Triton and
+  Gluon kernels including AITER's; and JAX-FlyDSL. JAX-AITER and JAX-Triton
+  are pinned as git submodules in `third_party/`. MORI-EP follows for MoE
+  dispatch and combine.
 - Interleaved 1F1B and DualPipeV as custom Shardy schedules, and faster
   checkpoint saves.
 - Multi-node execution, and RL post-training with Ray and vLLM.
