@@ -37,6 +37,10 @@ This is the target design; [What works](#what-works) lists what runs today.
   double- and single-stream blocks, with its flow-matching loss, matching
   MaxDiffusion's transformer; `--model=maxdiffusion:flux-dev` trains it on
   synthetic batches.
+- Operator providers chosen per op with `--ops`: ROCm TE fused attention and
+  FP8/MXFP8 GEMMs, JAX-AITER flash attention, RMSNorm, SiLU-and-mul and GEMMs,
+  with native JAX as the fallback, each checked by `jaxtitan.ops.conformance`
+  against native JAX on one GPU, sharded and inside a pipeline step.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
 - A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
@@ -48,9 +52,11 @@ with the zero-bubble schedule, against 1.68 s with 1F1B. Without the
 pipeline, the same step as one `jax.jit` program takes 0.83 s with data
 parallelism and 0.80 s with FSDP, so on one node the pipeline is still 1.7x
 and 1.8x slower. [docs/pipelines.md](docs/pipelines.md) has every schedule and
-layout measured, and the reasons for the gap. MaxText's Llama 3.1 8B runs the
-same pipeline at 2.03 s per step, with gradients reduced per microbatch, and
-FLUX.1-dev (12B) trains at 4.4 images/s at 1024x1024 on 4 stages of 2 GPUs.
+layout measured, and the reasons for the gap. With TE's fused attention
+(`--ops=attention=te`) the pipeline step takes 1.26 s (12.1% MFU). MaxText's
+Llama 3.1 8B runs the same pipeline at 2.03 s per step, with gradients reduced
+per microbatch, and FLUX.1-dev (12B) trains at 4.4 images/s at 1024x1024 on 4
+stages of 2 GPUs, 5.6 images/s with TE attention.
 
 ```python
 from jaxtitan import mpmd as jt_mpmd
@@ -95,7 +101,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `src/jaxtitan/mpmd` | Topology, Shardy MPMD config and pipelined train steps |
 | `src/jaxtitan/parallel` | DP, FSDP and TP shardings from logical parameter axes |
 | `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText and MaxDiffusion models (`adapters/`) |
-| `src/jaxtitan/ops` | Semantic operators (native JAX today) |
+| `src/jaxtitan/ops` | Semantic operators: per-op provider policy, native JAX, ROCm TE and JAX-AITER providers, and the conformance harness |
 | `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
 | `src/jaxtitan/trainer` | Training entry point (`python -m jaxtitan.trainer.train`) and Orbax checkpoints |
 | `src/jaxtitan/observability` | Per-GPU busy and idle time from profiler traces |
