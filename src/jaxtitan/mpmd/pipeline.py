@@ -190,10 +190,48 @@ def _per_device_manual(fn: Callable[..., jax.Array], axes, mesh: jax.sharding.Me
   return per_device_fn
 
 
+def global_grad_norm(stage_grads: Sequence) -> jax.Array:
+  """The norm of all stages' gradients together, usable on every stage's mesh.
+
+  Each stage sums its squares on its own mesh; Shardy MPMD moves those scalars
+  to one mesh for the sum and the result back to every mesh. Under `jax.jit`
+  the MPMD annotations do nothing.
+  """
+  total = None
+  for grads in stage_grads:
+    squares = sum(jnp.sum(jnp.square(g.astype(jnp.float32))) for g in jax.tree.leaves(grads))
+    total = squares if total is None else total + squares
+  return mpmd.broadcast(mpmd.reduce(jnp.sqrt(total)))
+
+
+def clipped_update(optimizer: optax.GradientTransformation, params, grads, state,
+                   norm: jax.Array, max_grad_norm: float | None = None):
+  """`optimizer`'s update of one stage, given the global gradient norm.
+
+  With `max_grad_norm`, `grads` are first scaled as
+  `optax.clip_by_global_norm(max_grad_norm)` scales them with `norm` as the
+  global norm. When `norm` is not finite, `params` and `state` come back
+  unchanged.
+  """
+  if max_grad_norm is not None:
+    clip = norm < max_grad_norm
+    grads = jax.tree.map(
+        lambda g: jax.lax.select(clip, g, (g / norm.astype(g.dtype)) * max_grad_norm), grads)
+  updates, new_state = optimizer.update(grads, state, params)
+  new_params = optax.apply_updates(params, updates)
+  finite = jnp.isfinite(norm)
+
+  def keep(new, old):
+    return jnp.where(finite, new, old)
+
+  return jax.tree.map(keep, new_params, params), jax.tree.map(keep, new_state, state)
+
+
 def make_train_step(
     stage_fns: Sequence[Callable[..., jax.Array]],
     optimizer: optax.GradientTransformation,
     *,
+    max_grad_norm: float | None = None,
     copy_axes: Sequence | None = None,
     param_specs: Sequence | None = None,
     mesh: jax.sharding.Mesh | None = None,
@@ -201,7 +239,10 @@ def make_train_step(
 ) -> Callable:
   """Returns `step(stage_params, opt_states, tokens, targets)`.
 
-  Every stage keeps its own optimizer state, so gradient clipping is per stage.
+  The step returns `(stage_params, opt_states, loss, grad_norm)`. Every stage
+  keeps its own optimizer state, but `grad_norm` is one norm over all stages'
+  gradients, and `max_grad_norm` clips by it, as for a single model. When the
+  norm is not finite, no stage updates and the loss comes back as NaN.
 
   By default a stage reduces its gradients across its data-parallel ranks in
   the backward pass of every microbatch. With `copy_axes`, one pytree of axes
@@ -268,11 +309,12 @@ def make_train_step(
 
   def train_step(stage_params, opt_states, tokens, targets):
     loss, grads = loss_and_grads(stage_params, tokens, targets)
+    norm = global_grad_norm(grads)
     new_params, new_states = [], []
     for params, grad, state in zip(stage_params, grads, opt_states):
-      updates, state = optimizer.update(grad, state, params)
-      new_params.append(optax.apply_updates(params, updates))
+      params, state = clipped_update(optimizer, params, grad, state, norm, max_grad_norm)
+      new_params.append(params)
       new_states.append(state)
-    return tuple(new_params), tuple(new_states), loss
+    return tuple(new_params), tuple(new_states), jnp.where(jnp.isfinite(norm), loss, jnp.nan), norm
 
   return train_step

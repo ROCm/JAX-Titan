@@ -111,7 +111,8 @@ def main(argv=None):
         f"transformer: max |velocity diff| {float(np.max(np.abs(pred - ref))):.2e}")
 
   # 2. The MPMD pipeline step matches single-mesh jax.jit.
-  optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(args.lr))
+  optimizer = optax.sgd(args.lr)
+  max_grad_norm = 1.0
   host_opt = tuple(jax.device_get(optimizer.init(p)) for p in host_params)
   batches = [example(num_mb) for _ in range(args.steps)]
   topology = jt_mpmd.make_topology(num_stages)
@@ -129,12 +130,13 @@ def main(argv=None):
       return total / num_mb
 
     loss, grads = jax.value_and_grad(loss_fn)(stage_params)
+    norm = jt_mpmd.global_grad_norm(grads)
     new_p, new_s = [], []
     for p, g, s in zip(stage_params, grads, opt_states):
-      u, s = optimizer.update(g, s, p)
-      new_p.append(optax.apply_updates(p, u))
+      p, s = jt_mpmd.clipped_update(optimizer, p, g, s, norm, max_grad_norm)
+      new_p.append(p)
       new_s.append(s)
-    return tuple(new_p), tuple(new_s), loss
+    return tuple(new_p), tuple(new_s), loss, norm
 
   def replicated(tree, mesh):
     return jax.tree.map(lambda _: NamedSharding(mesh, P()), tree)
@@ -146,23 +148,26 @@ def main(argv=None):
       for k in batches[0][0]
   }
   tgt_sh = NamedSharding(meshes[-1], P(None, "data"))
-  train_step = jt_mpmd.make_train_step(stage_fns, optimizer)
+  train_step = jt_mpmd.make_train_step(stage_fns, optimizer, max_grad_norm=max_grad_norm)
+  scalar = NamedSharding(meshes[-1], P())
   compiled = mpmd.jit(
       train_step, config,
       in_shardings=(param_sh, opt_sh, in_sh, tgt_sh),
-      out_shardings=(param_sh, opt_sh, NamedSharding(meshes[-1], P())),
+      out_shardings=(param_sh, opt_sh, scalar, scalar),
   ).lower(host_params, host_opt, *batches[0]).compile()
   ref_step = jax.jit(reference_step)
 
   mpmd_params, mpmd_opt = jax.device_put((host_params, host_opt), (param_sh, opt_sh))
   ref_params, ref_opt = host_params, host_opt
   for step, (inputs, targets) in enumerate(batches):
-    mpmd_params, mpmd_opt, mpmd_loss = compiled(
+    mpmd_params, mpmd_opt, mpmd_loss, mpmd_norm = compiled(
         mpmd_params, mpmd_opt, jax.device_put(inputs, in_sh), jax.device_put(targets, tgt_sh)
     )
-    ref_params, ref_opt, ref_loss = ref_step(ref_params, ref_opt, inputs, targets)
-    print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}")
+    ref_params, ref_opt, ref_loss, ref_norm = ref_step(ref_params, ref_opt, inputs, targets)
+    print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}  "
+          f"grad norm {float(mpmd_norm):.4f}  ref {float(ref_norm):.4f}")
     np.testing.assert_allclose(float(mpmd_loss), float(ref_loss), rtol=1e-5)
+    np.testing.assert_allclose(float(mpmd_norm), float(ref_norm), rtol=1e-5)
   for a, b in zip(jax.tree.leaves(jax.device_get(mpmd_params)),
                   jax.tree.leaves(jax.device_get(ref_params))):
     np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)

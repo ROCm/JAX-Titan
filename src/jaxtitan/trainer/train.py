@@ -119,6 +119,10 @@ def parse_args(argv=None):
   parser.add_argument("--lr", type=float, default=3e-4)
   parser.add_argument("--warmup_steps", type=int, default=10)
   parser.add_argument(
+      "--max_grad_norm", type=float, default=1.0,
+      help="Clip by the gradient norm over all stages together.",
+  )
+  parser.add_argument(
       "--data",
       default=str(paths.work_dir() / "data/wikitext103_train.llama3.bin"),
       help="uint32 token file, or 'synthetic'. maxdiffusion: models always "
@@ -145,6 +149,11 @@ def parse_args(argv=None):
   )
   parser.add_argument(
       "--profile_dir", default=str(paths.work_dir() / "profiles"),
+  )
+  parser.add_argument(
+      "--step_timeout", type=float, default=300.0,
+      help="Exit when the first step runs longer than this many seconds, or a "
+      "later step longer than this or 10x the median step; 0 turns it off.",
   )
   parser.add_argument("--platform", default="", help="'cpu' runs on 8 CPU devices.")
   parser.add_argument("--seed", type=int, default=0)
@@ -256,7 +265,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
   loss_sharding = NamedSharding(meshes[-1], P())
 
   train_step = jt_mpmd.make_train_step(
-      stage_fns, optimizer, mesh=meshes[0],
+      stage_fns, optimizer, max_grad_norm=args.max_grad_norm, mesh=meshes[0],
       copy_axes=[llama.device_copy_axes(s[0]) for s in shapes] if per_step else None,
       param_specs=[s[0] for s in specs], per_device=args.per_device,
   )
@@ -264,7 +273,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
       train_step,
       config,
       in_shardings=(param_shardings, opt_shardings, token_sharding, target_sharding),
-      out_shardings=(param_shardings, opt_shardings, loss_sharding),
+      out_shardings=(param_shardings, opt_shardings, loss_sharding, loss_sharding),
       donate_argnums=(0, 1),
   )
 
@@ -286,7 +295,7 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
   import jax  # pylint: disable=g-import-not-at-top
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
-  import optax  # pylint: disable=g-import-not-at-top
+  from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
   from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
 
@@ -333,14 +342,17 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
 
   def train_step(params, opt_state, tokens, targets):
     loss, grads = jax.value_and_grad(loss_fn)(params, tokens, targets)
-    updates, opt_state = optimizer.update(grads, opt_state, params)
-    return optax.apply_updates(params, updates), opt_state, loss
+    norm = jt_mpmd.global_grad_norm([grads])
+    params, opt_state = jt_mpmd.clipped_update(
+        optimizer, params, grads, opt_state, norm, args.max_grad_norm)
+    return params, opt_state, jnp.where(jnp.isfinite(norm), loss, jnp.nan), norm
 
   param_shardings, opt_shardings = shardings
+  scalar = NamedSharding(mesh, P())
   jitted = jax.jit(
       train_step,
       in_shardings=(param_shardings, opt_shardings, batch_sharding, batch_sharding),
-      out_shardings=(param_shardings, opt_shardings, NamedSharding(mesh, P())),
+      out_shardings=(param_shardings, opt_shardings, scalar, scalar),
       donate_argnums=(0, 1),
   )
 
@@ -399,10 +411,8 @@ def main(argv=None):
       0.0, args.lr, args.warmup_steps, max(args.steps, args.warmup_steps + 1),
       end_value=args.lr * 0.1,
   )
-  optimizer = optax.chain(
-      optax.clip_by_global_norm(1.0),
-      optax.adamw(lr, b1=0.9, b2=0.95, eps=1e-8, weight_decay=0.1, mask=_decay_mask),
-  )
+  # Each step clips by the global gradient norm (--max_grad_norm) before this.
+  optimizer = optax.adamw(lr, b1=0.9, b2=0.95, eps=1e-8, weight_decay=0.1, mask=_decay_mask)
 
   mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
   if adapter:
@@ -492,6 +502,11 @@ def main(argv=None):
   tokens_per_step, flops_per_step = work.tokens_per_step, work.flops_per_step
   peak_flops = len(devices) * args.peak_tflops_per_device * 1e12
   log = open(args.log_file, "a") if args.log_file else None
+  watchdog = None
+  if args.step_timeout > 0:
+    from jaxtitan.observability import watchdog as wd  # pylint: disable=g-import-not-at-top
+
+    watchdog = wd.StepWatchdog(args.step_timeout)
 
   for step in range(start, args.steps):
     if profile and step == profile[0]:
@@ -499,9 +514,13 @@ def main(argv=None):
       jax.profiler.start_trace(args.profile_dir)
     tokens, targets = layout.put_batch(next_batch(step))
     t0 = time.time()
+    if watchdog:
+      watchdog.start(step)
     with jax.profiler.StepTraceAnnotation("train_step", step_num=step):
-      params, opt_states, loss = compiled(params, opt_states, tokens, targets)
-      loss = float(loss)
+      params, opt_states, loss, grad_norm = compiled(params, opt_states, tokens, targets)
+      loss, grad_norm = float(loss), float(grad_norm)
+    if watchdog:
+      watchdog.stop()
     dt = time.time() - t0
     if profile and step == profile[1] - 1:
       jax.block_until_ready((params, opt_states))
@@ -510,12 +529,13 @@ def main(argv=None):
     record = {
         "step": step,
         "loss": loss,
+        "grad_norm": grad_norm,
         "step_time_s": dt,
         "tokens_per_s": tokens_per_step / dt,
         "mfu": flops_per_step / dt / peak_flops,
     }
     print(
-        f"step {step:4d} | loss {loss:8.4f} | {dt * 1e3:8.1f} ms | "
+        f"step {step:4d} | loss {loss:8.4f} | grad norm {grad_norm:8.3f} | {dt * 1e3:8.1f} ms | "
         f"{record['tokens_per_s']:10.0f} tok/s | MFU {100 * record['mfu']:5.1f}%",
         flush=True,
     )
@@ -529,7 +549,9 @@ def main(argv=None):
       ]
       print("peak HBM per device (GiB): " + " ".join(f"{p:.1f}" for p in peaks), flush=True)
     if not np.isfinite(loss):
-      raise FloatingPointError(f"non-finite loss at step {step}")
+      raise FloatingPointError(
+          f"non-finite loss or gradient norm ({grad_norm}) at step {step}; the step "
+          "made no update, and nothing was saved after it")
     if ckpt:
       t0 = time.time()
       force = step + 1 == args.steps

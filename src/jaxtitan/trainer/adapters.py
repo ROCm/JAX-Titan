@@ -94,12 +94,13 @@ def _mpmd_layout(args, topology, model, optimizer, inputs, targets, split_batch)
 
   in_sh, tgt_sh = shardings(inputs, meshes[0]), shardings(targets, meshes[-1])
   stage_fns = [ops.for_stage(fn, i) for i, fn in enumerate(model.stage_fns())]
-  train_step = jt_mpmd.make_train_step(stage_fns, optimizer)
+  train_step = jt_mpmd.make_train_step(stage_fns, optimizer, max_grad_norm=args.max_grad_norm)
+  scalar = NamedSharding(meshes[-1], P())
   jitted = mpmd.jit(
       train_step,
       config,
       in_shardings=(param_sh, opt_sh, in_sh, tgt_sh),
-      out_shardings=(param_sh, opt_sh, NamedSharding(meshes[-1], P())),
+      out_shardings=(param_sh, opt_sh, scalar, scalar),
       donate_argnums=(0, 1),
   )
 
@@ -113,6 +114,18 @@ def _mpmd_layout(args, topology, model, optimizer, inputs, targets, split_batch)
   )
   return Layout(init, abstract_state, jitted, shapes(inputs), shapes(targets), put_batch,
                 f"mpmd:{num_stages}")
+
+
+def _routed_attention():
+  """`jaxtitan.ops.attention` when the ops policy names attention, else None.
+
+  Unrouted, a reference model keeps its own attention implementation.
+  """
+  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
+
+  policy = ops.current_policy()
+  routed = "attention" in policy.prefs or any("attention" in s for s in policy.stages.values())
+  return ops.attention if routed else None
 
 
 def _maxtext(args, name, devices, optimizer):
@@ -130,7 +143,7 @@ def _maxtext(args, name, devices, optimizer):
   cfg = mt.config(name, **overrides)
   topology = _topology(args, devices, lambda d: mt.mesh(cfg, d))
   model = mt.Model(cfg, next(iter(topology.values())), num_stages=args.num_stages,
-                   layers=_stage_layers(args))
+                   layers=_stage_layers(args), attention=_routed_attention())
 
   mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
   tokens = (jax.ShapeDtypeStruct((num_mb, mb, seq), jnp.int32), P(None, "data", None))
@@ -155,7 +168,6 @@ def _maxdiffusion(args, flavor, devices, optimizer):
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
-  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from jaxtitan.models.adapters import maxdiffusion as md  # pylint: disable=g-import-not-at-top
 
   P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name
@@ -171,10 +183,8 @@ def _maxdiffusion(args, flavor, devices, optimizer):
   flux = md.transformer(flavor, **kwargs)
   topology = _topology(args, devices, lambda d: jax.sharding.Mesh(
       np.asarray(d).reshape(len(d), 1), (jt_mpmd.DATA_AXIS, jt_mpmd.TENSOR_AXIS)))
-  policy = ops.current_policy()
-  routed = "attention" in policy.prefs or any("attention" in s for s in policy.stages.values())
   model = md.Model(flux, num_stages=args.num_stages, blocks=_stage_layers(args),
-                   attention=ops.attention if routed else None)
+                   attention=_routed_attention())
 
   side = args.resolution // 16
   image_tokens = side * side

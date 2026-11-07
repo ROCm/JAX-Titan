@@ -1,8 +1,9 @@
 """Checks the Llama MPMD pipeline step against a single-mesh `jax.jit` step.
 
-Both steps use the same stage functions, microbatches and per-stage optimizer,
-in fp32, so their losses and parameters must agree. SGD keeps the parameter
-check tight: Adam magnifies rounding noise in near-zero embedding gradients.
+Both steps use the same stage functions, microbatches and optimizer, clipped
+by the gradient norm over all stages, in fp32, so their losses, gradient norms
+and parameters must agree. SGD keeps the parameter check tight: Adam magnifies
+rounding noise in near-zero embedding gradients.
 
   python examples/llama_mpmd_parity.py --platform=cpu
   python examples/llama_mpmd_parity.py --platform=cpu --stage_fsdp --tensor_parallel=2
@@ -29,6 +30,10 @@ def parse_args(argv=None):
       "--lr", type=float, default=0.5,
       help="SGD learning rate. 0.5 moves the parameters far in a few steps, "
       "but over tens of steps it amplifies rounding differences.",
+  )
+  parser.add_argument(
+      "--max_grad_norm", type=float, default=1.0,
+      help="Clip by the gradient norm over all stages, as the trainer does.",
   )
   parser.add_argument(
       "--rtol", type=float, default=1e-5,
@@ -83,7 +88,7 @@ def main(argv=None):
       stage_fns.append(functools.partial(lambda f, p, x: f(p, x, None), fn))
     else:
       stage_fns.append(fn)
-  optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(args.lr))
+  optimizer = optax.sgd(args.lr)
 
   layers = tuple(int(n) for n in args.stage_layers.split(",")) if args.stage_layers else None
   keys = jax.random.split(jax.random.key(0), num_stages)
@@ -110,12 +115,13 @@ def main(argv=None):
       return total / num_mb
 
     loss, grads = jax.value_and_grad(loss_fn)(stage_params)
+    norm = jt_mpmd.global_grad_norm(grads)
     new_p, new_s = [], []
     for p, g, s in zip(stage_params, grads, opt_states):
-      u, s = optimizer.update(g, s, p)
-      new_p.append(optax.apply_updates(p, u))
+      p, s = jt_mpmd.clipped_update(optimizer, p, g, s, norm, args.max_grad_norm)
+      new_p.append(p)
       new_s.append(s)
-    return tuple(new_p), tuple(new_s), loss
+    return tuple(new_p), tuple(new_s), loss, norm
 
   specs = [
       parallel.tree_specs(
@@ -138,13 +144,14 @@ def main(argv=None):
   if args.reduce_grads == "step":
     copy_axes = [llama.device_copy_axes(p) for p in host_params]
   train_step = jt_mpmd.make_train_step(
-      stage_fns, optimizer, copy_axes=copy_axes,
+      stage_fns, optimizer, max_grad_norm=args.max_grad_norm, copy_axes=copy_axes,
       param_specs=[s[0] for s in specs], mesh=meshes[0], per_device=args.per_device,
   )
+  scalar = NamedSharding(meshes[-1], P())
   compiled = mpmd.jit(
       train_step, config,
       in_shardings=(param_sh, opt_sh, tok_sh, tgt_sh),
-      out_shardings=(param_sh, opt_sh, NamedSharding(meshes[-1], P())),
+      out_shardings=(param_sh, opt_sh, scalar, scalar),
   ).lower(host_params, host_opt, batches[0][..., :-1], batches[0][..., 1:]).compile()
   ref = jax.jit(reference_step)
 
@@ -153,12 +160,14 @@ def main(argv=None):
   worst = 0.0
   for step, batch in enumerate(batches):
     tok, tgt = batch[..., :-1], batch[..., 1:]
-    mpmd_params, mpmd_opt, mpmd_loss = compiled(
+    mpmd_params, mpmd_opt, mpmd_loss, mpmd_norm = compiled(
         mpmd_params, mpmd_opt, jax.device_put(tok, tok_sh), jax.device_put(tgt, tgt_sh)
     )
-    ref_params, ref_opt, ref_loss = ref(ref_params, ref_opt, tok, tgt)
-    print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}")
+    ref_params, ref_opt, ref_loss, ref_norm = ref(ref_params, ref_opt, tok, tgt)
+    print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}  "
+          f"grad norm {float(mpmd_norm):.4f}  ref {float(ref_norm):.4f}")
     np.testing.assert_allclose(float(mpmd_loss), float(ref_loss), rtol=args.rtol)
+    np.testing.assert_allclose(float(mpmd_norm), float(ref_norm), rtol=args.rtol)
     worst = max(worst, abs(float(mpmd_loss) / float(ref_loss) - 1))
   for a, b in zip(jax.tree.leaves(jax.device_get(mpmd_params)),
                   jax.tree.leaves(jax.device_get(ref_params))):

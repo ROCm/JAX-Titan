@@ -16,6 +16,7 @@ constrain activation shardings, so stages reduce gradients per microbatch.
 """
 
 from collections.abc import Callable, Sequence
+import contextlib
 import functools
 import os
 
@@ -28,9 +29,12 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from maxtext.common.common_types import AttentionType
 from maxtext.common.common_types import DecoderBlockType
 from maxtext.common.common_types import MODEL_MODE_TRAIN
 from maxtext.configs import pyconfig
+from maxtext.inference.kvcache import KVTensor
+from maxtext.layers import attention_op
 from maxtext.layers import nnx_scan
 from maxtext.models import models
 from maxtext.utils import maxtext_utils
@@ -149,17 +153,50 @@ def _slice_layers(x, start: int, size: int, scan_axis: int):
   return jax.lax.slice_in_dim(x, start, start + size, axis=axis)
 
 
+def _unset(value) -> bool:
+  return value is None or (isinstance(value, (bool, int)) and not value)
+
+
+@contextlib.contextmanager
+def _attention_through(attention: Callable):
+  """Routes MaxText's causal training attention to `attention(q, k, v, causal=, scale=)`.
+
+  Everything else (decoding, other masks, sinks, soft caps, quantized KV)
+  stays in MaxText's attention op. MaxText folds 1/sqrt(head_dim) into the
+  query projection, so the call has no scale; the stages' segment ids are all
+  ones, so the mask is plain causal.
+  """
+  original = attention_op.AttentionOp.apply_attention
+
+  def apply_attention(self, query, key, value, decoder_segment_ids, segment_positions, lengths,
+                      model_mode, *args, **kwargs):
+    extras = [v for k, v in kwargs.items() if k not in ("qk_product_einsum", "wv_product_einsum")]
+    if (model_mode != MODEL_MODE_TRAIN or not all(map(_unset, [*args, *extras]))
+        or self.attention_type != AttentionType.GLOBAL or self.attn_logits_soft_cap
+        or isinstance(key, KVTensor) or isinstance(value, KVTensor)):
+      return original(self, query, key, value, decoder_segment_ids, segment_positions, lengths,
+                      model_mode, *args, **kwargs)
+    return attention(query, key, value, causal=True, scale=1.0), None, None
+
+  attention_op.AttentionOp.apply_attention = apply_attention
+  try:
+    yield
+  finally:
+    attention_op.AttentionOp.apply_attention = original
+
+
 class Model:
   """A MaxText decoder-only model split into pipeline stages.
 
   `mesh` is any one stage mesh from `mesh()`: MaxText's layers place their
   sharding constraints on it, and an MPMD program needs every constraint on
   one mesh. `layers` gives the decoder layers per stage; the default splits
-  them evenly.
+  them evenly. With `attention`, such as `jaxtitan.ops.attention`, causal
+  training attention runs there instead of in MaxText's attention op.
   """
 
   def __init__(self, cfg, stage_mesh: jax.sharding.Mesh, *, num_stages: int,
-               layers: Sequence[int] | None = None):
+               layers: Sequence[int] | None = None, attention: Callable | None = None):
     if cfg.decoder_block not in _SCANNED_GENERIC or not cfg.scan_layers:
       raise NotImplementedError(
           f"decoder_block={cfg.decoder_block} with scan_layers={cfg.scan_layers}; "
@@ -179,6 +216,7 @@ class Model:
     self.mesh = stage_mesh
     self.layers = tuple(layers)
     self.num_stages = num_stages
+    self._attention = attention
 
     with nn.logical_axis_rules(cfg.logical_axis_rules):
       abstract = nnx.eval_shape(lambda: self._transformer(0))
@@ -239,15 +277,18 @@ class Model:
       positions = jnp.broadcast_to(jnp.arange(length, dtype=jnp.int32), (batch, length))
       segments = jnp.ones((batch, length), jnp.int32)
       layers = nnx.merge(self._layers_graph, params["layers"], self._layer_rest[stage])
-      y = nnx_scan.apply_scanned_layers(
-          layers, y,
-          length=self.layers[stage],
-          param_scan_axis=cfg.param_scan_axis,
-          apply_fn=lambda layer, h: layer(h, segments, positions, True, MODEL_MODE_TRAIN)[0],
-          remat=cfg.remat_policy != "none",
-          remat_policy=None,
-          prevent_cse=maxtext_utils.should_prevent_cse_in_remat(cfg),
-      )
+      routed = (_attention_through(self._attention) if self._attention
+                else contextlib.nullcontext())
+      with routed:
+        y = nnx_scan.apply_scanned_layers(
+            layers, y,
+            length=self.layers[stage],
+            param_scan_axis=cfg.param_scan_axis,
+            apply_fn=lambda layer, h: layer(h, segments, positions, True, MODEL_MODE_TRAIN)[0],
+            remat=cfg.remat_policy != "none",
+            remat_policy=None,
+            prevent_cse=maxtext_utils.should_prevent_cse_in_remat(cfg),
+        )
       if stage < self.num_stages - 1:
         return y
       y = nnx.merge(self._norm_graph, params["decoder_norm"])(y, out_sharding=None)
