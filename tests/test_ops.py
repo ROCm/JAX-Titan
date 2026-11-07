@@ -13,6 +13,7 @@ import pytest
 from jaxtitan import ops
 from jaxtitan.ops import conformance
 from jaxtitan.ops import registry
+from jaxtitan.ops.partitioned import partitioned
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -94,6 +95,58 @@ def test_scoped_and_stage_policies():
   assert [s.provider for s in ops.selections()] == ["fake", "native"]
 
 
+def test_native_rope_rotates_pairs():
+  rng = np.random.default_rng(0)
+  x = rng.standard_normal((2, 5, 3, 8)).astype(np.float32)
+  angles = rng.standard_normal((5, 4)).astype(np.float32)
+  y = ops.native.rope(jnp.asarray(x), jnp.cos(angles), jnp.sin(angles))
+  z = (x[..., :4] + 1j * x[..., 4:]) * np.exp(1j * angles)[None, :, None, :]
+  np.testing.assert_allclose(y, np.concatenate([z.real, z.imag], axis=-1), rtol=1e-5, atol=1e-5)
+
+
+def _mesh(shape, names):
+  return jax.sharding.Mesh(np.asarray(jax.devices()[:np.prod(shape)]).reshape(shape), names)
+
+
+def _placed(x, mesh, *spec):
+  return jax.device_put(x, jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec)))
+
+
+def test_partitioned_rows_shard_and_missing_factors_are_summed():
+  mesh = _mesh((4, 2), ("data", "model"))
+  op = partitioned(lambda x, w, p: (x * w * p[0], jnp.sum(x, axis=0)),
+                   (("r", "n"), ("n",)), (("r", "n"), ("n",)), replicated=("n",))
+  x = jnp.arange(64.0).reshape(8, 8)
+  w = jnp.linspace(1.0, 2.0, 8)
+  y, column_sums = jax.jit(lambda x, w: op(x, w, (2.0,)))(_placed(x, mesh, "data", "model"), w)
+  np.testing.assert_allclose(y, x * w * 2)
+  np.testing.assert_allclose(column_sums, x.sum(axis=0))
+  assert y.sharding.spec[0] in ("data", ("data",))
+
+
+def test_partitioned_contraction_is_summed_or_gathered():
+  mesh = _mesh((4,), ("data",))
+  op = partitioned(lambda a, b, p: a @ b.T, (("r", "k"), ("c", "k")), (("r", "c"),))
+  rng = np.random.default_rng(0)
+  a = jnp.asarray(rng.standard_normal((16, 32)), jnp.float32)
+  b = jnp.asarray(rng.standard_normal((8, 32)), jnp.float32)
+  f = jax.jit(lambda a, b: op(a, b, ()))
+  b_k = _placed(b, mesh, None, "data")
+  np.testing.assert_allclose(f(_placed(a, mesh, None, "data"), b_k), a @ b.T, rtol=1e-4)
+  np.testing.assert_allclose(f(_placed(a, mesh, "data", None), b_k), a @ b.T, rtol=1e-4)
+
+
+def test_triton_providers_fall_back_off_gpu():
+  ops.set_policy("rms_norm=triton,rope=triton,linear=gluon")
+  x = jnp.ones((2, 8, 4, 16))
+  ops.rms_norm(x, jnp.ones(16), 1e-6)
+  ops.rope(x, jnp.ones((8, 8)), jnp.zeros((8, 8)))
+  ops.linear(x, jnp.ones((16, 32)))
+  for s in ops.selections():
+    assert s.provider == "native"
+    assert s.skipped[0][0] in ("triton", "gluon") and s.skipped[0][1], s
+
+
 def test_conformance_native_on_cpu():
   rows = conformance.run(["native"], ["single", "vmap", "sharded"], quick=True)
   assert rows and all(r["status"] == "pass" for r in rows), rows
@@ -113,4 +166,4 @@ def test_trainer_records_ops(tmp_path):
   metas = [json.loads(p.read_text()) for p in (tmp_path / "ckpt" / "2" / "meta").iterdir()
            if p.is_file() and p.read_text().lstrip().startswith("{")]
   meta = next(m for m in metas if "ops" in m)
-  assert {s["op"] for s in meta["ops"]} == {"attention", "rms_norm", "swiglu", "linear"}
+  assert {s["op"] for s in meta["ops"]} == {"attention", "rms_norm", "swiglu", "linear", "rope"}

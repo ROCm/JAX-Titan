@@ -39,8 +39,10 @@ This is the target design; [What works](#what-works) lists what runs today.
   synthetic batches.
 - Operator providers chosen per op with `--ops`: ROCm TE fused attention and
   FP8/MXFP8 GEMMs, JAX-AITER flash attention, RMSNorm, SiLU-and-mul and GEMMs,
-  with native JAX as the fallback, each checked by `jaxtitan.ops.conformance`
-  against native JAX on one GPU, sharded and inside a pipeline step.
+  AITER's Triton RMSNorm, SiLU-and-mul and RoPE and a gfx950 Gluon GEMM through
+  JAX-Triton, with native JAX as the fallback, each checked by
+  `jaxtitan.ops.conformance` against native JAX on one GPU, sharded and inside
+  a pipeline step.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
 - A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
@@ -101,7 +103,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `src/jaxtitan/mpmd` | Topology, Shardy MPMD config and pipelined train steps |
 | `src/jaxtitan/parallel` | DP, FSDP and TP shardings from logical parameter axes |
 | `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText and MaxDiffusion models (`adapters/`) |
-| `src/jaxtitan/ops` | Semantic operators: per-op provider policy, native JAX, ROCm TE and JAX-AITER providers, and the conformance harness |
+| `src/jaxtitan/ops` | Semantic operators: per-op provider policy, native JAX, ROCm TE, JAX-AITER and JAX-Triton (Triton and Gluon) providers, and the conformance harness |
 | `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
 | `src/jaxtitan/trainer` | Training entry point (`python -m jaxtitan.trainer.train`) and Orbax checkpoints |
 | `src/jaxtitan/observability` | Per-GPU busy and idle time from profiler traces |
@@ -111,7 +113,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
 | `third_party/patches/` | jaxlib, Shardy and MaxDiffusion patches |
 | `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
-| `third_party/jax-aiter/`, `third_party/jax-triton/` | JAX-AITER and JAX-Triton (git submodules), for the operator providers |
+| `third_party/jax-aiter/`, `third_party/jax-triton/`, `third_party/gfx950-gluon-tutorials/` | JAX-AITER, JAX-Triton and the gfx950 Gluon GEMMs (git submodules), for the operator providers |
 
 ## Roadmap
 
@@ -134,7 +136,8 @@ JAX-Titan on AMD's SPUR cluster.
 ## License
 
 MIT, see [LICENSE](LICENSE). The submodules in `third_party/` keep their own
-licenses (JAX-AITER MIT, JAX-Triton Apache-2.0), and two directories keep
+licenses (JAX-AITER and gfx950-gluon-tutorials MIT, JAX-Triton Apache-2.0),
+and two directories keep
 the Apache License 2.0:
 
 - `src/jaxpp/`: the original JaxPP project, with its own `LICENSE` and file

@@ -25,3 +25,14 @@ def swiglu(
 def linear(x: jax.Array, w: jax.Array) -> jax.Array:
   """x [..., in] times w [in, out]."""
   return x @ w
+
+
+def rope(x: jax.Array, cos: jax.Array, sin: jax.Array) -> jax.Array:
+  """Rotary embedding on [batch, seq, heads, head_dim], split-halves layout.
+
+  `cos` and `sin` are [seq, head_dim // 2].
+  """
+  c = cos.astype(jnp.float32)[None, :, None, :]
+  s = sin.astype(jnp.float32)[None, :, None, :]
+  x1, x2 = jnp.split(x.astype(jnp.float32), 2, axis=-1)
+  return jnp.concatenate([x1 * c - x2 * s, x2 * c + x1 * s], axis=-1).astype(x.dtype)

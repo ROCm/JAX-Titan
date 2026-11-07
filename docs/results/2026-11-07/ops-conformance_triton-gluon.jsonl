@@ -1,0 +1,84 @@
+{"op": "attention", "case": "llama3.1-8b", "provider": "triton", "mode": "single", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "triton", "mode": "sharded", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "triton", "mode": "manual", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "triton", "mode": "mpmd", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "triton", "mode": "bench", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "gluon", "mode": "single", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "gluon", "mode": "sharded", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "gluon", "mode": "manual", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "gluon", "mode": "mpmd", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "llama3.1-8b", "provider": "gluon", "mode": "bench", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "triton", "mode": "single", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "triton", "mode": "sharded", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "triton", "mode": "manual", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "triton", "mode": "mpmd", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "triton", "mode": "bench", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "gluon", "mode": "single", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "gluon", "mode": "sharded", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "gluon", "mode": "manual", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "gluon", "mode": "mpmd", "status": "skip", "reason": "has no attention"}
+{"op": "attention", "case": "flux.1-1024px", "provider": "gluon", "mode": "bench", "status": "skip", "reason": "has no attention"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "triton", "mode": "single", "status": "pass", "kernel_origin": "AITER Triton RMSNorm", "fwd_err": 0.0016610270831733942, "native_fwd_err": 0.0016610270831733942, "grad_err": 0.0016603847034275532, "native_grad_err": 0.0016603847034275532}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "custom_partitioning has no batching rule, so it cannot run under jax.vmap; use --per_device=shard_map"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "triton", "mode": "sharded", "status": "pass", "kernel_origin": "AITER Triton RMSNorm", "fwd_err": 0.0016609638696536422, "native_fwd_err": 0.0016609638696536422, "grad_err": 0.0017010860610753298, "native_grad_err": 0.0017010861774906516}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "triton", "mode": "manual", "status": "pass", "kernel_origin": "AITER Triton RMSNorm", "fwd_err": 0.0016609638696536422, "native_fwd_err": 0.0016609638696536422, "grad_err": 0.0030872072093188763, "native_grad_err": 0.0030872072093188763}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "triton", "mode": "mpmd", "status": "pass", "kernel_origin": "AITER Triton RMSNorm", "loss": 2.0051369667053223, "native_loss": 2.0051369667053223, "grad_err": 0.0008284744108095765}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "triton", "mode": "bench", "status": "pass", "kernel_origin": "AITER Triton RMSNorm", "fwd_err": 0.0016610270831733942, "native_fwd_err": 0.0016610270831733942, "grad_err": 0.0016603847034275532, "native_grad_err": 0.0016603847034275532, "ms": 0.2498868852853775, "native_ms": 0.16941223293542862, "speedup": 0.6779556787942486}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "gluon", "mode": "single", "status": "skip", "reason": "has no rms_norm"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "has no rms_norm"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "gluon", "mode": "sharded", "status": "skip", "reason": "has no rms_norm"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "gluon", "mode": "manual", "status": "skip", "reason": "has no rms_norm"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "gluon", "mode": "mpmd", "status": "skip", "reason": "has no rms_norm"}
+{"op": "rms_norm", "case": "llama3.1-8b", "provider": "gluon", "mode": "bench", "status": "skip", "reason": "has no rms_norm"}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "triton", "mode": "single", "status": "pass", "kernel_origin": "AITER Triton SiLU-and-mul with XLA GEMMs", "fwd_err": 0.003925696015357971, "native_fwd_err": 0.003533178474754095, "grad_err": 0.0039258673787117004, "native_grad_err": 0.0039079939015209675}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "custom_partitioning has no batching rule, so it cannot run under jax.vmap; use --per_device=shard_map"}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "triton", "mode": "sharded", "status": "pass", "kernel_origin": "AITER Triton SiLU-and-mul with XLA GEMMs", "fwd_err": 0.003923530224710703, "native_fwd_err": 0.0035351659171283245, "grad_err": 0.004748725797981024, "native_grad_err": 0.004433603025972843}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "triton", "mode": "manual", "status": "pass", "kernel_origin": "AITER Triton SiLU-and-mul with XLA GEMMs", "fwd_err": 0.003923530224710703, "native_fwd_err": 0.0035351659171283245, "grad_err": 0.004748725797981024, "native_grad_err": 0.004433603025972843}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "triton", "mode": "mpmd", "status": "pass", "kernel_origin": "AITER Triton SiLU-and-mul with XLA GEMMs", "loss": 1.3562798500061035, "native_loss": 1.356363296508789, "grad_err": 0.005590558052062988}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "triton", "mode": "bench", "status": "pass", "kernel_origin": "AITER Triton SiLU-and-mul with XLA GEMMs", "fwd_err": 0.003925696015357971, "native_fwd_err": 0.003533178474754095, "grad_err": 0.0039258673787117004, "native_grad_err": 0.0039079939015209675, "ms": 3.790155053138733, "native_ms": 3.621690906584263, "speedup": 0.9555521755198484}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "gluon", "mode": "single", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMMs with XLA SiLU-and-mul", "fwd_err": 0.0035331211984157562, "native_fwd_err": 0.003533178474754095, "grad_err": 0.004055807366967201, "native_grad_err": 0.0039079939015209675}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "custom_partitioning has no batching rule, so it cannot run under jax.vmap; use --per_device=shard_map"}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "gluon", "mode": "sharded", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMMs with XLA SiLU-and-mul", "fwd_err": 0.0035351100377738476, "native_fwd_err": 0.0035351659171283245, "grad_err": 0.004589920397847891, "native_grad_err": 0.004433603025972843}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "gluon", "mode": "manual", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMMs with XLA SiLU-and-mul", "fwd_err": 0.0035351100377738476, "native_fwd_err": 0.0035351659171283245, "grad_err": 0.004589920397847891, "native_grad_err": 0.004433603025972843}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "gluon", "mode": "mpmd", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMMs with XLA SiLU-and-mul", "loss": 1.356363296508789, "native_loss": 1.356363296508789, "grad_err": 0.0023185324389487505}
+{"op": "swiglu", "case": "llama3.1-8b", "provider": "gluon", "mode": "bench", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMMs with XLA SiLU-and-mul", "fwd_err": 0.0035331211984157562, "native_fwd_err": 0.003533178474754095, "grad_err": 0.004055807366967201, "native_grad_err": 0.0039079939015209675, "ms": 7.12372362613678, "native_ms": 3.5938071087002754, "speedup": 0.5044843535920848}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "triton", "mode": "single", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "triton", "mode": "sharded", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "triton", "mode": "manual", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "triton", "mode": "mpmd", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "triton", "mode": "bench", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "gluon", "mode": "single", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.00166219100356102, "native_fwd_err": 0.00166219100356102, "grad_err": 0.0016614821506664157, "native_grad_err": 0.0016614821506664157}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "custom_partitioning has no batching rule, so it cannot run under jax.vmap; use --per_device=shard_map"}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "gluon", "mode": "sharded", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.0016617715591564775, "native_fwd_err": 0.0016617715591564775, "grad_err": 0.0031525965314358473, "native_grad_err": 0.0031525844242423773}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "gluon", "mode": "manual", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.0016617715591564775, "native_fwd_err": 0.0016617715591564775, "grad_err": 0.0031525965314358473, "native_grad_err": 0.0031525844242423773}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "gluon", "mode": "mpmd", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "loss": 2.000417709350586, "native_loss": 2.000417709350586, "grad_err": 3.715366619871929e-05}
+{"op": "linear", "case": "llama3.1-8b-wq", "provider": "gluon", "mode": "bench", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.00166219100356102, "native_fwd_err": 0.00166219100356102, "grad_err": 0.0016614821506664157, "native_grad_err": 0.0016614821506664157, "ms": 0.862613320350647, "native_ms": 0.4656203091144562, "speedup": 0.5397787144362487}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "triton", "mode": "single", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "triton", "mode": "sharded", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "triton", "mode": "manual", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "triton", "mode": "mpmd", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "triton", "mode": "bench", "status": "skip", "reason": "has no linear"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "gluon", "mode": "single", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.0016620088135823607, "native_fwd_err": 0.0016620088135823607, "grad_err": 0.0016619910020381212, "native_grad_err": 0.0016619910020381212}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "custom_partitioning has no batching rule, so it cannot run under jax.vmap; use --per_device=shard_map"}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "gluon", "mode": "sharded", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.0016615650383755565, "native_fwd_err": 0.0016615650383755565, "grad_err": 0.003151975106447935, "native_grad_err": 0.003151975106447935}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "gluon", "mode": "manual", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.0016615650383755565, "native_fwd_err": 0.0016615650383755565, "grad_err": 0.003151975106447935, "native_grad_err": 0.003151975106447935}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "gluon", "mode": "mpmd", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "loss": 1.9999686479568481, "native_loss": 1.9999686479568481, "grad_err": 0.0}
+{"op": "linear", "case": "llama3.1-8b-wk", "provider": "gluon", "mode": "bench", "status": "pass", "kernel_origin": "Gluon inter-wave BF16 GEMM", "fwd_err": 0.0016620088135823607, "native_fwd_err": 0.0016620088135823607, "grad_err": 0.0016619910020381212, "native_grad_err": 0.0016619910020381212, "ms": 0.6370330229401588, "native_ms": 0.2764556556940079, "speedup": 0.4339738219818745}
+{"op": "rope", "case": "llama3.1-8b", "provider": "triton", "mode": "single", "status": "pass", "kernel_origin": "AITER Triton RoPE", "fwd_err": 0.0016588547732681036, "native_fwd_err": 0.0016588547732681036, "grad_err": 0.0016585466219112277, "native_grad_err": 0.0016585466219112277}
+{"op": "rope", "case": "llama3.1-8b", "provider": "triton", "mode": "vmap", "status": "skip", "reason": "custom_partitioning has no batching rule, so it cannot run under jax.vmap; use --per_device=shard_map"}
+{"op": "rope", "case": "llama3.1-8b", "provider": "triton", "mode": "sharded", "status": "pass", "kernel_origin": "AITER Triton RoPE", "fwd_err": 0.0016584841068834066, "native_fwd_err": 0.0016584841068834066, "grad_err": 0.0016640013782307506, "native_grad_err": 0.0016640013782307506}
+{"op": "rope", "case": "llama3.1-8b", "provider": "triton", "mode": "manual", "status": "pass", "kernel_origin": "AITER Triton RoPE", "fwd_err": 0.0016584841068834066, "native_fwd_err": 0.0016584841068834066, "grad_err": 0.003158981679007411, "native_grad_err": 0.0031589805148541927}
+{"op": "rope", "case": "llama3.1-8b", "provider": "triton", "mode": "mpmd", "status": "pass", "kernel_origin": "AITER Triton RoPE", "loss": 2.0002121925354004, "native_loss": 2.0002121925354004, "grad_err": 1.6352969396393746e-05}
+{"op": "rope", "case": "llama3.1-8b", "provider": "triton", "mode": "bench", "status": "pass", "kernel_origin": "AITER Triton RoPE", "fwd_err": 0.0016588547732681036, "native_fwd_err": 0.0016588547732681036, "grad_err": 0.0016585466219112277, "native_grad_err": 0.0016585466219112277, "ms": 0.2485811710357666, "native_ms": 0.23286789655685425, "speedup": 0.9367881548974943}
+{"op": "rope", "case": "llama3.1-8b", "provider": "gluon", "mode": "single", "status": "skip", "reason": "has no rope"}
+{"op": "rope", "case": "llama3.1-8b", "provider": "gluon", "mode": "vmap", "status": "skip", "reason": "has no rope"}
+{"op": "rope", "case": "llama3.1-8b", "provider": "gluon", "mode": "sharded", "status": "skip", "reason": "has no rope"}
+{"op": "rope", "case": "llama3.1-8b", "provider": "gluon", "mode": "manual", "status": "skip", "reason": "has no rope"}
+{"op": "rope", "case": "llama3.1-8b", "provider": "gluon", "mode": "mpmd", "status": "skip", "reason": "has no rope"}
+{"op": "rope", "case": "llama3.1-8b", "provider": "gluon", "mode": "bench", "status": "skip", "reason": "has no rope"}

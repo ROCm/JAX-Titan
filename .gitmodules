@@ -4,3 +4,6 @@
 [submodule "third_party/jax-triton"]
 	path = third_party/jax-triton
 	url = https://github.com/jax-ml/jax-triton.git
+[submodule "third_party/gfx950-gluon-tutorials"]
+	path = third_party/gfx950-gluon-tutorials
+	url = https://github.com/ROCm/gfx950-gluon-tutorials.git
