@@ -112,7 +112,7 @@ JAX-Titan on AMD's SPUR cluster.
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
 | `.cursor/skills/`, `.claude/skills/` | Agent skills for Cursor and Claude Code (identical copies): coding rules, upstream debugging, and running and cleaning up training jobs |
 | `third_party/patches/` | jaxlib, Shardy and MaxDiffusion patches |
-| `src/jaxpp/` | JaxPP project, kept as-is for a later comparison |
+| `third_party/jaxpp/` | The earlier JaxPP project, kept as-is for a later comparison |
 | `third_party/jax-aiter/`, `third_party/jax-triton/`, `third_party/gfx950-gluon-tutorials/` | JAX-AITER, JAX-Triton and the gfx950 Gluon GEMMs (git submodules), for the operator providers |
 
 ## Roadmap
@@ -137,10 +137,9 @@ JAX-Titan on AMD's SPUR cluster.
 
 MIT, see [LICENSE](LICENSE). The submodules in `third_party/` keep their own
 licenses (JAX-AITER and gfx950-gluon-tutorials MIT, JAX-Triton Apache-2.0),
-and two directories keep
-the Apache License 2.0:
+and two directories keep the Apache License 2.0:
 
-- `src/jaxpp/`: the original JaxPP project, with its own `LICENSE` and file
-  headers.
+- `third_party/jaxpp/`: the original JaxPP project, with its own `LICENSE` and
+  file headers.
 - `third_party/patches/`: patches to jax, Shardy and MaxDiffusion, which are
   Apache-2.0 projects. See [third_party/patches/README.md](third_party/patches/README.md).
