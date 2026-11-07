@@ -176,6 +176,12 @@ def parse_args(argv=None):
       help="Saves training state here, and resumes from its latest checkpoint.",
   )
   parser.add_argument(
+      "--init_from", default="",
+      help="maxtext: models start from this MaxText parameter checkpoint, e.g. "
+      "pretrained weights converted with MaxText's checkpoint_conversion/to_maxtext.py, "
+      "instead of a random initialization. A checkpoint in --checkpoint_dir wins.",
+  )
+  parser.add_argument(
       "--checkpoint_every", type=int, default=0,
       help="Steps between checkpoints; 0 saves only after the last step.",
   )
@@ -191,6 +197,11 @@ def parse_args(argv=None):
       "--step_timeout", type=float, default=300.0,
       help="Exit when the first step runs longer than this many seconds, or a "
       "later step longer than this or 10x the median step; 0 turns it off.",
+  )
+  parser.add_argument(
+      "--fail_at_step", type=int, default=0,
+      help="Exit at once with code 75 after this many steps, without finishing saves or "
+      "logging an end event, to rehearse a restart (ETTR, restart cost, lost work).",
   )
   parser.add_argument("--platform", default="", help="'cpu' runs on 8 CPU devices.")
   parser.add_argument("--seed", type=int, default=0)
@@ -505,6 +516,8 @@ def main(argv=None):
 
     layout, work = adapters.build(args, devices, optimizer)
   else:
+    if args.init_from:
+      raise NotImplementedError("--init_from loads MaxText parameter checkpoints for maxtext: models")
     cfg = llama.FLAVORS[args.model]
     build = _build_mpmd if args.parallel == "mpmd" else _build_spmd
     layout = build(args, cfg, devices, optimizer)
@@ -696,6 +709,9 @@ def main(argv=None):
           blocking = time.time() - t0
           print(f"saved step {step + 1} in {blocking:.1f}s", flush=True)
           log.event("save", step=step + 1, blocking_s=blocking)
+      if done == args.fail_at_step:
+        print(f"--fail_at_step: exiting after step {step}", flush=True)
+        os._exit(75)
     if ckpt:
       t0 = time.time()
       ckpt.close()

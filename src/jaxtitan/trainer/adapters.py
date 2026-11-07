@@ -84,7 +84,8 @@ def _init_replicated(args, model, optimizer, meshes):
   opt_sh = tuple(replicated(s, m) for s, m in zip(opt_shapes, meshes))
 
   def init():
-    params = jax.device_put(model.init(args.seed), param_sh)
+    stage_params = model.load(args.init_from) if args.init_from else model.init(args.seed)
+    params = jax.device_put(stage_params, param_sh)
     opt_states = tuple(
         jax.jit(optimizer.init, out_shardings=s)(p) for p, s in zip(params, opt_sh)
     )
@@ -366,6 +367,8 @@ def build(args, devices, optimizer) -> tuple[Layout, Workload]:
     )
   if args.parallel == "mpmd" and args.reduce_grads != "microbatch":
     raise NotImplementedError(f"{args.model} reduces gradients per microbatch only")
+  if args.init_from and provider != "maxtext":
+    raise NotImplementedError(f"--init_from loads MaxText parameter checkpoints, not {provider}")
   if args.parallel == "dp" and (args.microbatches * args.microbatch_size) % len(devices):
     raise ValueError(
         f"--parallel=dp splits all {args.microbatches * args.microbatch_size} sequences of a "

@@ -148,6 +148,15 @@ def llama_params(cfg, stage_params: Sequence[dict]) -> tuple[dict, ...]:
   return tuple(out)
 
 
+def _pure_dict(tree):
+  """Nested dicts of arrays from a tree that may hold NNX States and Variables."""
+  if isinstance(tree, nnx.Variable):
+    return tree.get_value()
+  if hasattr(tree, "items"):
+    return {k: _pure_dict(v) for k, v in tree.items()}
+  return tree
+
+
 def _slice_layers(x, start: int, size: int, scan_axis: int):
   axis = scan_axis if x.ndim > scan_axis else 0
   return jax.lax.slice_in_dim(x, start, start + size, axis=axis)
@@ -263,6 +272,25 @@ class Model:
   def abstract(self, seed: int = 0) -> tuple[dict, ...]:
     """ShapeDtypeStructs of `init(seed)`, without initializing."""
     return jax.eval_shape(lambda: self.split(self._init_full(seed)[0]))
+
+  def load(self, path: str) -> tuple[dict, ...]:
+    """Stage parameters from a MaxText parameter checkpoint.
+
+    `path` is what MaxText's `load_parameters_path` takes: the output of its
+    `checkpoint_conversion/to_maxtext.py` (from Hugging Face weights) or of
+    `checkpointing.save_params_to_path`. MaxText's loader restores the weights
+    onto one device in the config's `weight_dtype`.
+    """
+    from maxtext.common import checkpointing  # pylint: disable=g-import-not-at-top
+
+    device = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
+    with nn.logical_axis_rules(self.cfg.logical_axis_rules):
+      _, abstract, _ = nnx.split(nnx.eval_shape(lambda: self._transformer(0)), nnx.Param, ...)
+    abstract = jax.tree.map(lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=device),
+                            abstract)
+    restored = checkpointing.load_params_from_path(
+        path, abstract, self.cfg.checkpoint_storage_concurrent_gb)
+    return self.split(_pure_dict(restored))
 
   def forward(self, stage: int, params: dict, x: jax.Array) -> jax.Array:
     """Token ids in for stage 0; logits out of the last stage."""

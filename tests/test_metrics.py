@@ -3,6 +3,7 @@ synthetic logs with known answers, and the trainer's run directory."""
 
 import json
 import math
+import os
 import pathlib
 import subprocess
 import sys
@@ -157,6 +158,24 @@ def test_energy_between():
              for t in range(11)]
   e = power.energy_between(samples, 2.0, 8.0)["g0"]
   assert e["energy_j"] == 600.0 and e["mean_power_w"] == 100.0
+
+
+def test_restart_rehearsal(tmp_path):
+  run = tmp_path / "run"
+  common = [sys.executable, "-m", "jaxtitan.trainer.train", "--platform=cpu",
+            "--model=llama3-test", "--data=synthetic", "--seq_len=32", "--microbatches=4",
+            "--microbatch_size=4", "--steps=8", "--warmup_steps=1", "--checkpoint_every=3",
+            f"--checkpoint_dir={tmp_path / 'ckpt'}", f"--run_dir={run}", "--power_sample_s=0"]
+  first = subprocess.run([*common, "--fail_at_step=5"], capture_output=True, text=True,
+                         check=False, cwd=REPO, env=dict(os.environ))
+  assert first.returncode == 75, first.stdout[-2000:] + first.stderr[-2000:]
+  second = subprocess.run(common, capture_output=True, text=True, check=False, cwd=REPO,
+                          env=dict(os.environ))
+  assert second.returncode == 0, second.stdout[-2000:] + second.stderr[-2000:]
+  assert "restored step 3" in second.stdout
+  m = ettr.measure(run, skip=1)
+  assert (m["attempts"], m["committed_steps"], m["lost_steps"]) == (2, 8, 2)
+  assert m["u0_stages_s"][1]["restore"] > 0
 
 
 def test_trainer_run_dir(tmp_path):

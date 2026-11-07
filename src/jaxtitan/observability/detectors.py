@@ -62,7 +62,8 @@ def variants() -> dict:
   return out
 
 
-def run(out_dir: pathlib.Path, name: str, variant: dict, trainer_args, repeat: int) -> dict:
+def run(out_dir: pathlib.Path, name: str, variant: dict, trainer_args, repeat: int,
+        timeout: float) -> dict:
   run_dir = out_dir / (name if repeat == 0 else f"{name}.{repeat}")
   env = dict(os.environ)
   env.update(variant.get("env", {}))
@@ -75,7 +76,11 @@ def run(out_dir: pathlib.Path, name: str, variant: dict, trainer_args, repeat: i
          f"--run_dir={run_dir}", "--power_sample_s=0"]
   run_dir.mkdir(parents=True, exist_ok=True)
   with open(run_dir / "stdout.txt", "w") as f:
-    result = subprocess.run(cmd, env=env, stdout=f, stderr=subprocess.STDOUT, check=False)
+    try:
+      result = subprocess.run(cmd, env=env, stdout=f, stderr=subprocess.STDOUT, check=False,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+      return {"run_dir": str(run_dir), "failed": f"timed out after {timeout:.0f} s"}
   results = run_dir / "results.json"
   if result.returncode != 0 or not results.exists():
     return {"run_dir": str(run_dir), "failed": f"exit {result.returncode}"}
@@ -94,6 +99,7 @@ def main(argv=None):
   parser.add_argument("out_dir")
   parser.add_argument("--only", default="", help="Comma-separated detectors; baseline always runs.")
   parser.add_argument("--repeats", type=int, default=1)
+  parser.add_argument("--timeout", type=float, default=1800, help="Seconds per run.")
   args = parser.parse_args(argv)
 
   out_dir = pathlib.Path(args.out_dir)
@@ -104,7 +110,7 @@ def main(argv=None):
   runs = {name: [] for name in chosen}
   for repeat in range(args.repeats):
     for name, variant in chosen.items():
-      runs[name].append(run(out_dir, name, variant, trainer_args, repeat))
+      runs[name].append(run(out_dir, name, variant, trainer_args, repeat, args.timeout))
       print(f"{name} #{repeat}: {runs[name][-1]}", flush=True)
 
   def median(name):
