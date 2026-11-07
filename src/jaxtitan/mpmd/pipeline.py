@@ -325,12 +325,10 @@ def make_train_step(
 
     return jax.tree.map(reduce, copy_grads, copy_axes[i], param_specs[i])
 
-  def stage_grads(i, grads):
+  def stage_grads(i, copy_grads):
     """Stage `i`'s gradients, summed across its ranks, and their sum of squares."""
-    if copy_axes is not None:
-      grads = reduce_copies(i, grads)
-      return grads, _sum_of_squares(grads)
-    return _sum_of_squares(grads)
+    grads = reduce_copies(i, copy_grads)
+    return grads, _sum_of_squares(grads)
 
   def update(params, grads, state, squares):
     norm = jnp.sqrt(sum(squares))
@@ -339,23 +337,32 @@ def make_train_step(
 
   def train_step(stage_params, opt_states, tokens, targets):
     loss, grads = loss_and_grads(stage_params, tokens, targets)
-    # Named computations, not inferred ops: Shardy merges inferred ops into a
-    # neighboring fragment, and merging the global norm into a backward pass
-    # (or the gradient reduction into the update) makes that fragment wait for
-    # every other mesh. User fragments never merge with each other, so only
-    # the small update waits for the other stages' sums of squares.
-    squares, summed = [], []
-    for i, g in enumerate(grads):
-      out = mpmd.named_computation(functools.partial(stage_grads, i), name=grad_norm_name(i))(g)
-      g, sq = out if copy_axes is not None else (g, out)
-      summed.append(g)
-      squares.append(mpmd.broadcast(sq))
     new_params, new_states = [], []
-    for i, (params, grad, state) in enumerate(zip(stage_params, summed, opt_states)):
-      params, state, norm = mpmd.named_computation(update, name=update_name(i))(
-          params, grad, state, squares)
-      new_params.append(params)
-      new_states.append(state)
+    if copy_axes is None:
+      # Gradients are already summed. Named fragments here gain little and
+      # make TE attention's custom partitioning fail to compile.
+      norm = global_grad_norm(grads)
+      for params, grad, state in zip(stage_params, grads, opt_states):
+        params, state = clipped_update(optimizer, params, grad, state, norm, max_grad_norm)
+        new_params.append(params)
+        new_states.append(state)
+    else:
+      # Named computations, not inferred ops: Shardy merges inferred ops into
+      # a neighboring fragment, and merging the global norm into a backward
+      # pass (or the gradient reduction into the update) makes that fragment
+      # wait for every other mesh. User fragments never merge with each other,
+      # so only the small update waits for the other stages' sums of squares.
+      squares, summed = [], []
+      for i, g in enumerate(grads):
+        g, sq = mpmd.named_computation(functools.partial(stage_grads, i),
+                                       name=grad_norm_name(i))(g)
+        summed.append(g)
+        squares.append(mpmd.broadcast(sq))
+      for i, (params, grad, state) in enumerate(zip(stage_params, summed, opt_states)):
+        params, state, norm = mpmd.named_computation(update, name=update_name(i))(
+            params, grad, state, squares)
+        new_params.append(params)
+        new_states.append(state)
     return tuple(new_params), tuple(new_states), jnp.where(jnp.isfinite(norm), loss, jnp.nan), norm
 
   return train_step
