@@ -75,8 +75,10 @@ restart cost of 175 s (the restart plus a first save), Daly's interval is
 
 ## Known limits
 
-- Gradients are all-reduced in every microbatch: MaxText's own trainer runs
-  its pipeline at 1.763 s per step with MaxText's attention, against 2.098 s
-  here with the same attention. JAX-Titan's Llama, which reduces once per step,
-  takes 1.502 s. Per-step reduction for MaxText's layers is the next step.
+- Each stage is replicated over its 4 GPUs, with gradients all-reduced in
+  every microbatch: MaxText's own trainer runs its pipeline at 1.763 s per
+  step with MaxText's attention, sharding each stage over its GPUs (FSDP), and
+  this recipe takes 2.098 s with the same attention. JAX-Titan's Llama, which
+  reduces once per step, takes 1.502 s. Per-step reduction or FSDP inside
+  stages for MaxText's layers is the next step.
 - One node; multi-node is M5.

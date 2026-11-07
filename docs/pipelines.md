@@ -258,11 +258,16 @@ attention, full remat):
   the inferred update.
 - **MaxText's own pipeline is 1.19x faster than the MPMD pipeline of
   MaxText's layers, and 1.17x slower than the MPMD pipeline of JAX-Titan's
-  Llama.** MaxText's pipeline reduces gradients once per step, the adapter
-  in every microbatch; JAX-Titan's Llama reduces once per step. Per-step
-  reduction for adapter models (per-rank parameter copies under MaxText's
-  sharding constraints) is the next step for them. Without a pipeline the two
-  trainers match (0.723 s and 0.733 s).
+  Llama.** MaxText's pipeline is one SPMD program with a GPipe-like loop. It
+  shards weights and optimizer state over each stage's 4 GPUs (FSDP, with
+  `pipeline_fsdp_ag_once` off), so in every microbatch it all-gathers weights
+  and reduce-scatters gradients, and each GPU updates a quarter of its stage
+  (37 GB estimated per GPU). The adapter replicates each stage, all-reduces
+  its gradients in every microbatch (twice the bytes of a reduce-scatter) and
+  updates the whole stage on every GPU (178 GiB). JAX-Titan's Llama reduces
+  once per step under the zero-bubble schedule. Per-step reduction or FSDP
+  inside stages for adapter models is the next step for them. Without a
+  pipeline the two trainers match (0.723 s and 0.733 s).
 
 ## Operator providers (2026-11-06 and 2026-11-07, 8x MI355X)
 
