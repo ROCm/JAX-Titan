@@ -4,7 +4,9 @@
 #   1. stops this user's JAX-Titan processes (SIGTERM, then SIGKILL),
 #   2. waits until none of this user's processes hold a GPU,
 #   3. removes stale RCCL shared-memory segments (/dev/shm/nccl-*) of this user,
-#   4. removes the Orbax checkpoint directories named with --checkpoint.
+#   4. removes the Orbax checkpoint directories named with --checkpoint,
+#   5. removes this user's GPU core dumps (gpucore.*) in the repository and
+#      ${JAXTITAN_ROOT}.
 # Prints the plan and changes nothing unless --yes is given. Works on the host
 # and inside the container, since the container user has the host uid.
 #
@@ -27,7 +29,7 @@ while (( $# )); do
   case $1 in
     --yes) yes=1 ;;
     --checkpoint) checkpoints+=("$2"); shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -123,6 +125,19 @@ for ckpt in "${checkpoints[@]}"; do
   run rm -rf -- "${real}"
 done
 (( ${#checkpoints[@]} )) || echo "  none given"
+
+echo "== 5. GPU core dumps of ${USER}"
+# A GPU memory fault writes all GPU memory to gpucore.<pid>.gpu in the
+# process's working directory: 502 GB on 8x MI355X.
+mapfile -t dumps < <(find "${REPO}" "${JAXTITAN_ROOT}" -maxdepth 3 -user "${USER}" \
+  -name 'gpucore.*' -type f 2>/dev/null)
+if (( ${#dumps[@]} )); then
+  printf '  %s\n' "${dumps[@]}"
+  echo "  ${#dumps[@]} files, $(du -ch "${dumps[@]}" | tail -1 | cut -f1)"
+  run rm -f -- "${dumps[@]}"
+else
+  echo "  none"
+fi
 
 echo "== GPU state"
 if [[ -x "${REPO}/scripts/gpus_free.sh" ]]; then

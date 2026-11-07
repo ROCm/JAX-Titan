@@ -117,7 +117,9 @@ and files. With `--yes` it:
 3. removes the user's stale RCCL segments, `/dev/shm/nccl-*`, which killed
    runs leave behind at about 40 MB each;
 4. removes each `--checkpoint DIR` that is below `/dev/shm`, `/tmp` or
-   `${JAXTITAN_ROOT}`, owned by the user, and holds an Orbax checkpoint.
+   `${JAXTITAN_ROOT}`, owned by the user, and holds an Orbax checkpoint;
+5. removes the user's GPU core dumps, `gpucore.<pid>.gpu`, from the
+   repository and `${JAXTITAN_ROOT}`.
 
 Other artifacts to check: profiler traces under `--profile_dir`, IR dumps
 under `${JAXTITAN_ROOT}/dumps/`, and A/B worktrees (`git worktree remove`).
@@ -133,6 +135,12 @@ Rules:
   not match their own command line.
 - A stopped process can stay in `rocm-smi --showpids` as a zombie (`Z`) until
   its parent reaps it; it no longer holds GPU memory.
+- After a GPU memory fault (`Memory access fault by GPU node-N`), ROCm writes
+  all GPU memory to `gpucore.<pid>.gpu` in the process's working directory:
+  502 GB from one faulting kernel on 8x MI355X, enough to fill the shared
+  disk. `scripts/env.sh` sets `HSA_DISABLE_COREDUMP_ON_EXCEPTION=1` to prevent
+  it. If a dump appears anyway, delete it at once (`rm gpucore.<pid>.gpu`, or
+  the cleanup script) and check `df -h /`; do not wait for the job to end.
 
 ## Rationalizations to Reject
 
@@ -142,6 +150,7 @@ Rules:
 | "Let it run, step 0 is just slow" | Past compile plus 3 minutes, it is the RCCL hang |
 | "Clean up later" | Leftover processes hold 75% of every GPU's memory |
 | "That checkpoint is probably unused" | Ask, unless you created it for a test |
+| "Keep the GPU core dump to debug the fault" | It holds all GPU memory, hundreds of GB on a shared disk; reproduce the fault on one GPU with small inputs |
 | "Faster than last week's number" | Compare against a baseline from the same stack and day |
 
 ## Additional Resources

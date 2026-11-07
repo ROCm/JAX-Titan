@@ -88,3 +88,6 @@ docs/_build/
 # Misc.
 .DS_Store
 Thumbs.db
+
+# GPU core dumps from a GPU memory fault; see scripts/env.sh.
+gpucore.*

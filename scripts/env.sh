@@ -12,6 +12,10 @@ unset _rocm_root
 export PYTHONPATH="${JAXTITAN_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export JAX_COMPILATION_CACHE_DIR="${JAXTITAN_ROOT}/cache/jax"
 
+# A GPU memory fault otherwise writes a core dump of all GPU memory to the
+# working directory: 502 GB from one faulting kernel on 8x MI355X.
+export HSA_DISABLE_COREDUMP_ON_EXCEPTION=1
+
 # From the ROCm/xla rocm-dev-infra scaling book (llama7b-jax-fundamentals).
 export JAXTITAN_ROCM_XLA_FLAGS="--xla_gpu_autotune_level=4 \
 --xla_gpu_enable_triton_gemm=true \
