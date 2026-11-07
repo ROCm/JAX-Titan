@@ -1,12 +1,13 @@
 """Resuming from an Orbax checkpoint continues training exactly."""
 
-import json
 import pathlib
 import shutil
 import subprocess
 import sys
 
 import numpy as np
+
+from jaxtitan.observability import records
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 FLAGS = [
@@ -23,7 +24,7 @@ def _train(ckpt_dir, log, *flags):
       capture_output=True, text=True, check=False, cwd=REPO,
   )
   assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
-  return {r["step"]: r["loss"] for r in map(json.loads, open(log))}, result.stdout
+  return {r["step"]: r["loss"] for r in records.steps(records.read(log))}, result.stdout
 
 
 def _resume_from_step_3(tmp_path, name, *flags):

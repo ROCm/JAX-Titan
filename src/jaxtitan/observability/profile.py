@@ -1,15 +1,21 @@
 """Per-GPU busy and idle time from a `jax.profiler` trace.
 
   python -m jaxtitan.observability.profile TRACE_DIR [--lines]
+      [--steps N] [--json OUT]
 
 Reads the newest `*.xplane.pb` under TRACE_DIR and reports, for each GPU, the
 share of the traced window it spends in compute kernels, in collective
 kernels and in memory copies, and idle. The window runs from the first to the
 last GPU event, so a pipeline stage's idle share is its bubble plus any time
-it waits for transfers. Overlapping events count once, compute first.
+it waits for transfers. Overlapping events count once, compute first, so the
+collective share is exposed communication: collective time no compute
+kernel overlaps. With `--steps`, the number of traced steps, it also gives
+seconds per step; `--json` writes the result, which `summarize` reads as
+`<run_dir>/profile.json`, with the spread of each share across GPUs.
 """
 
 import argparse
+import json
 import pathlib
 import re
 
@@ -100,6 +106,27 @@ def summarize(xplane: pathlib.Path) -> dict:
   return result
 
 
+def report(xplane: pathlib.Path, steps: int = 0) -> dict:
+  """`summarize` with the window, the spread of each share across GPUs and,
+  given the traced step count, exposed collective seconds per step."""
+  result = summarize(xplane)
+  window = next(iter(result.values()))["window_s"]
+  out = {"xplane": str(xplane), "window_s": window, "steps": steps or None,
+         "gpus": {str(g): dict(r) for g, r in result.items()},
+         "spread": {k: max(r[k] for r in result.values()) - min(r[k] for r in result.values())
+                    for k in ("compute", "collective", "copy", "idle")}}
+  if steps:
+    for r in out["gpus"].values():
+      r["exposed_collective_s_per_step"] = r["collective"] * window / steps
+  return out
+
+
+def write_json(trace_dir: str, steps: int, out_path) -> dict:
+  out = report(newest_xplane(trace_dir), steps)
+  pathlib.Path(out_path).write_text(json.dumps(out, indent=1) + "\n")
+  return out
+
+
 def newest_xplane(trace_dir: str) -> pathlib.Path:
   files = sorted(pathlib.Path(trace_dir).rglob("*.xplane.pb"), key=lambda p: p.stat().st_mtime)
   if not files:
@@ -114,6 +141,8 @@ def main(argv=None):
       "--lines", action="store_true",
       help="List planes, lines and their most frequent event names instead.",
   )
+  parser.add_argument("--steps", type=int, default=0, help="Steps in the trace.")
+  parser.add_argument("--json", default="", help="Write the result here.")
   args = parser.parse_args(argv)
   xplane = newest_xplane(args.trace_dir)
   print(xplane)
@@ -129,14 +158,18 @@ def main(argv=None):
         top = ", ".join(f"{n[:60]} x{c}" for n, c in names.most_common(4))
         print(f"  line {line.name!r}: {sum(names.values())} events; {top}")
     return 0
-  result = summarize(xplane)
-  print(f"window {next(iter(result.values()))['window_s']:.3f} s")
-  print("gpu  compute  collective  copy   idle")
-  for gpu, r in result.items():
+  out = report(xplane, args.steps)
+  window = out["window_s"]
+  print(f"window {window:.3f} s")
+  print("gpu  compute  collective  copy   idle" + ("   exposed comm per step" if args.steps else ""))
+  for gpu, r in out["gpus"].items():
+    per_step = f"   {r['exposed_collective_s_per_step'] * 1e3:8.1f} ms" if args.steps else ""
     print(
-        f"{gpu:3d}  {100 * r['compute']:6.1f}%  {100 * r['collective']:9.1f}%  "
-        f"{100 * r['copy']:4.1f}%  {100 * r['idle']:5.1f}%"
+        f"{int(gpu):3d}  {100 * r['compute']:6.1f}%  {100 * r['collective']:9.1f}%  "
+        f"{100 * r['copy']:4.1f}%  {100 * r['idle']:5.1f}%{per_step}"
     )
+  if args.json:
+    pathlib.Path(args.json).write_text(json.dumps(out, indent=1) + "\n")
   return 0
 
 

@@ -46,7 +46,17 @@ This is the target design; [What works](#what-works) lists what runs today.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
 - A baseline without the pipeline (`--parallel=dp` or `--parallel=fsdp`): the
-  same model, weights and batches as one `jax.jit` program on all devices.
+  same model, weights and batches as one `jax.jit` program on all devices,
+  for MaxText and MaxDiffusion models too (`--parallel=dp`), as the Gate 0
+  reference.
+- One gradient norm over all stages for clipping, with no update and no
+  checkpoint after a non-finite norm or loss, and a step watchdog.
+- The ROCm scaling book's training metrics: a run directory (`--run_dir`)
+  with step records and timeline events, `env.json`, GPU power and energy,
+  validation loss, traces and RCCL collective times, summarized as step-time
+  percentiles, MFU against the nominal and a calibrated peak, startup and
+  checkpoint costs, ETTR, energy per token, pipeline utilization, scaling
+  efficiency and Gate 0 ([docs/metrics.md](docs/metrics.md)).
 
 On 8x AMD Instinct MI355X, Llama 3.1 8B with 2 pipeline stages of 4 GPUs and
 65,536 tokens per step trains at 1.45 s per step (45.1k tokens/s, 10.5% MFU)
@@ -58,7 +68,11 @@ layout measured, and the reasons for the gap. With TE's fused attention
 (`--ops=attention=te`) the pipeline step takes 1.26 s (12.1% MFU). MaxText's
 Llama 3.1 8B runs the same pipeline at 2.03 s per step, with gradients reduced
 per microbatch, and FLUX.1-dev (12B) trains at 4.4 images/s at 1024x1024 on 4
-stages of 2 GPUs, 5.6 images/s with TE attention.
+stages of 2 GPUs, 5.6 images/s with TE attention. These numbers clip each
+stage's gradients by its own norm. Clipping by one norm over all stages costs
+3% on MaxText's pipeline (2.09 s; 1.86 s with TE attention) and, until a
+scheduling stall is fixed, 16% on the default per-step reduction (1.70 s);
+see [docs/pipelines.md](docs/pipelines.md#global-gradient-clipping-maxtext-attention-and-gate-0-2026-11-07-8x-mi355x).
 
 ```python
 from jaxtitan import mpmd as jt_mpmd

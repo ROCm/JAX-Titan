@@ -164,9 +164,25 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 
 # MaxText's Llama 3.1 8B, built from MaxText's layers (the maxtext extra), on
 # the same data and pipeline. Gradients are reduced per microbatch.
+# --ops=attention=te or aiter routes MaxText's attention through jaxtitan.ops.
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
+
+# Its no-pipeline reference for Gate 0: the same stages, weights and batches as
+# one data-parallel jax.jit program; then compare the first 10 steps' losses.
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --parallel=dp \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=10 --run_dir=runs/mt_dp
+
+# Any run with --run_dir records the scaling book's training metrics (step
+# records and timeline, env.json, GPU power, validation with --eval_every) and
+# writes results.json; docs/metrics.md lists them and the tools that read them.
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --num_stages=2 \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=10 --run_dir=runs/mt_pp2
+python -m jaxtitan.observability.summarize --gate0 runs/mt_dp runs/mt_pp2 \
+  --gate0_steps 10 --gate0_rtol 2e-3
 
 # MaxDiffusion's FLUX.1-dev (12B) on synthetic 1024x1024 batches: noised
 # random latents and text embeddings, with the flow-matching loss. With 2

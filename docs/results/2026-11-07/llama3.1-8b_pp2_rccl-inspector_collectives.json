@@ -1,0 +1,72 @@
+[
+ {
+  "op": "AllReduce",
+  "ranks": 4,
+  "nodes": 1,
+  "bytes": 2415919104,
+  "count": 32,
+  "timing": [
+   "kernel_gpu"
+  ],
+  "time_us_p50": 29509.0,
+  "time_us_p99": 102655.51000000005,
+  "time_us_max": 115328,
+  "busbw_gbs_p50": 122.806245
+ },
+ {
+  "op": "AllReduce",
+  "ranks": 4,
+  "nodes": 1,
+  "bytes": 5859966976,
+  "count": 32,
+  "timing": [
+   "kernel_gpu"
+  ],
+  "time_us_p50": 51497.0,
+  "time_us_p99": 93508.54000000002,
+  "time_us_max": 98179,
+  "busbw_gbs_p50": 170.688596
+ },
+ {
+  "op": "AllReduce",
+  "ranks": 4,
+  "nodes": 1,
+  "bytes": 7516733440,
+  "count": 32,
+  "timing": [
+   "kernel_gpu"
+  ],
+  "time_us_p50": 69589.0,
+  "time_us_p99": 182744.33000000005,
+  "time_us_max": 196464,
+  "busbw_gbs_p50": 162.02417350000002
+ },
+ {
+  "op": "AllReduce",
+  "ranks": 4,
+  "nodes": 1,
+  "bytes": 7784628224,
+  "count": 32,
+  "timing": [
+   "kernel_gpu"
+  ],
+  "time_us_p50": 72706.0,
+  "time_us_p99": 72886.14,
+  "time_us_max": 72888,
+  "busbw_gbs_p50": 160.60497800000002
+ },
+ {
+  "op": "AllReduce",
+  "ranks": 4,
+  "nodes": 1,
+  "bytes": 8543797248,
+  "count": 32,
+  "timing": [
+   "kernel_gpu"
+  ],
+  "time_us_p50": 79227.5,
+  "time_us_p99": 119255.81000000003,
+  "time_us_max": 123921,
+  "busbw_gbs_p50": 161.758176
+ }
+]

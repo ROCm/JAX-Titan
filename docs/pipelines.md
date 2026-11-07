@@ -197,6 +197,49 @@ last. The loss falls from 3.51 to 2.75 in 20 steps.
 - Compiling took 53-54 s for the MaxText pipelines, 74-110 s for JAX-Titan's
   Llama and 123 s for FLUX.1.
 
+## Global gradient clipping, MaxText attention and Gate 0 (2026-11-07, 8x MI355X)
+
+Since 2026-11-07 every pipeline clips by one gradient norm over all stages
+(the global norm of `optax.clip_by_global_norm`, which per-stage clipping
+only approximated) and skips the update when the norm is not finite; every
+result above used per-stage clipping. MaxText's attention can run through
+`jaxtitan.ops` (`--ops=attention=te` or `aiter`), and `--parallel=dp` runs
+an adapter model's stages without the pipeline, as the Gate 0 reference.
+Medians over steps 5-29, Llama 3.1 8B with 65,536 tokens per step, 2 stages of
+4 GPUs, zero-bubble H1; per-step records are in
+[results/2026-11-07](results/2026-11-07).
+
+| Model code | Attention | Gradients reduced | Step | Against per-stage clipping |
+|---|---|---|---|---|
+| MaxText | MaxText's (native JAX) | per microbatch | 2.093 s | 2.028 s (+3.2%) |
+| MaxText | TE fused attention | per microbatch | 1.860 s | |
+| MaxText | JAX-AITER flash attention | per microbatch | 1.876 s | |
+| MaxText, no pipeline (`--parallel=dp`, 8 GPUs) | MaxText's | per step | 0.733 s | |
+| JAX-Titan's Llama | native | per step | 1.697 s | 1.457 s (+16%) |
+
+- **Gate 0 passes on one node.** Against `--parallel=dp` with the same
+  weights and batches, every pipeline stays within 8.7e-4 relative loss over
+  the first 10 steps (MaxText's attention 6.3e-4, TE 8.7e-4, JAX-AITER 8.7e-4;
+  step 0 within 1.1e-5). The warmup's loss spikes (steps 2-10, gradient norms
+  up to 54) then amplify bf16 rounding differences to 1-7%, so the gate is
+  K = 10 steps with a tolerance of 2e-3
+  (`summarize --gate0`, [maxtext-llama3.1-8b_gate0.json](results/2026-11-07/maxtext-llama3.1-8b_gate0.json)).
+- **TE and JAX-AITER attention make MaxText's pipeline 1.12-1.13x faster.**
+  JAX-AITER runs without `shard_map` here, since per-microbatch reduction has
+  no `vmap` over parameter copies.
+- **Global clipping costs 3% with per-microbatch reduction and 16% with
+  per-step reduction.** An A/B at the previous two commits (1.457 s at
+  `d18cbca`, 1.452 s at `e9dc50f`) rules out the operator work. Traces show
+  the same compute and exposed communication per step, but 0.33 s more idle
+  time on both meshes: the update needs both stages' gradient norms, and
+  Shardy merges that dependency into the first mesh's last backward fragment,
+  so it waits for the second mesh's whole gradient all-reduce before its own
+  backward pass, and the all-reduces run one after the other instead of
+  together. Wrapping the norm and the update in named computations of their
+  own (1.701 s) and the Shardy options
+  `mpmd_absorb_inferred_fragments_on_entry_point_function` (1.69-1.74 s) and
+  `mpmd_merge_inferred_after_scheduling=false` (1.68-1.73 s) do not help.
+
 ## Operator providers (2026-11-06 and 2026-11-07, 8x MI355X)
 
 `--ops` routes semantic ops to ROCm TE (the 2026-11-02 nightly wheel),

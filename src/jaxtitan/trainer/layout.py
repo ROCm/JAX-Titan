@@ -13,6 +13,10 @@ class Layout:
   `init()`'s `(params, opt_state)`, so a checkpoint can be restored without
   initializing first. `put_batch` places a host batch as the step's inputs
   and targets, which `input_spec` and `target_spec` describe.
+
+  `placement` maps each mesh name to its device ids and lists each stage's
+  mesh, for `env.json`'s rank map. `eval_step(params, inputs, targets)` is
+  the mean loss without an update, for validation.
   """
 
   init: Callable[[], tuple]
@@ -22,6 +26,16 @@ class Layout:
   target_spec: Any
   put_batch: Callable
   structure: str
+  placement: dict | None = None
+  eval_step: Any = None
+
+
+def placement(meshes: dict, stage_meshes) -> dict:
+  """`Layout.placement` from {mesh name: Mesh} and each stage's mesh name."""
+  return {
+      "meshes": {name: [int(d.id) for d in m.devices.flat] for name, m in meshes.items()},
+      "stages": list(stage_meshes),
+  }
 
 
 @dataclasses.dataclass

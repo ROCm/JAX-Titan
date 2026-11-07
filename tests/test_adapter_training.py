@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from jaxtitan.observability import records
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 FLAGS = [
     "--platform=cpu", "--microbatches=4", "--microbatch_size=4", "--steps=4",
@@ -35,14 +37,19 @@ MODELS = {
 }
 
 
-def _train(provider, ckpt_dir, log):
+def _run(provider, log, *flags):
   result = subprocess.run(
       [sys.executable, "-m", "jaxtitan.trainer.train", *FLAGS, *MODELS[provider],
-       f"--checkpoint_dir={ckpt_dir}", f"--log_file={log}"],
+       f"--log_file={log}", *flags],
       capture_output=True, text=True, check=False, cwd=REPO,
   )
   assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
-  return {r["step"]: r["loss"] for r in map(json.loads, open(log))}, result.stdout
+  return {r["step"]: r for r in records.steps(records.read(log))}, result.stdout
+
+
+def _train(provider, ckpt_dir, log):
+  records, out = _run(provider, log, f"--checkpoint_dir={ckpt_dir}")
+  return {step: r["loss"] for step, r in records.items()}, out
 
 
 @pytest.mark.parametrize("provider", sorted(MODELS))
@@ -57,3 +64,18 @@ def test_resume_is_exact(provider, tmp_path):
   assert sorted(resumed) == [2, 3]
   for step in (2, 3):
     assert resumed[step] == full[step], (step, resumed[step], full[step])
+
+
+@pytest.mark.parametrize("provider", sorted(MODELS))
+def test_pipeline_matches_no_pipeline_reference(provider, tmp_path):
+  if importlib.util.find_spec(provider) is None:
+    pytest.skip(f"needs {provider}")
+  pipeline, _ = _run(provider, tmp_path / "mpmd.jsonl")
+  reference, out = _run(provider, tmp_path / "dp.jsonl", "--parallel=dp")
+  assert "no pipeline" in out
+  # Same weights and batch: step 0's loss agrees to rounding; bf16 gradient
+  # reductions in a different order move later steps apart.
+  assert pipeline[0]["loss"] == pytest.approx(reference[0]["loss"], rel=1e-6)
+  for step in range(4):
+    assert pipeline[step]["loss"] == pytest.approx(reference[step]["loss"], rel=1e-3), step
+    assert pipeline[step]["grad_norm"] == pytest.approx(reference[step]["grad_norm"], rel=5e-3), step

@@ -1,0 +1,32 @@
+[
+ {
+  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_native.jsonl",
+  "reference": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_dp.jsonl",
+  "steps": 10,
+  "max_rel_loss": 0.0006271125079992397,
+  "max_rel_grad_norm": 0.02604128537077435,
+  "step0_rel_loss": 1.0541589671722497e-05,
+  "rtol": 0.002,
+  "pass": true
+ },
+ {
+  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_te.jsonl",
+  "reference": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_dp.jsonl",
+  "steps": 10,
+  "max_rel_loss": 0.0008676607525002753,
+  "max_rel_grad_norm": 0.4878870700123147,
+  "step0_rel_loss": 5.038259769573251e-06,
+  "rtol": 0.002,
+  "pass": true
+ },
+ {
+  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_aiter.jsonl",
+  "reference": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_dp.jsonl",
+  "steps": 10,
+  "max_rel_loss": 0.0008645937561339927,
+  "max_rel_grad_norm": 0.012948718188405352,
+  "step0_rel_loss": 5.038259769573251e-06,
+  "rtol": 0.002,
+  "pass": true
+ }
+]
