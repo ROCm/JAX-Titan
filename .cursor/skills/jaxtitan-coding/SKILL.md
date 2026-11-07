@@ -16,8 +16,8 @@ JAX-Titan is JAX-native: it builds on `jax.jit`, Shardy MPMD, IFRT IR, PJRT
 and XLA, with no PyTorch runtime. A pipeline is one Shardy MPMD program, not
 hand-written point-to-point code. Changes to jaxlib, XLA or Shardy are
 upstreamable patches in `third_party/patches/`, never workarounds in
-`src/jaxtitan`. `src/jaxpp/` is the earlier JaxPP project, kept unchanged for a
-later comparison: do not import from it or edit it.
+`src/jaxtitan`. `third_party/jaxpp/` is the earlier JaxPP project, kept unchanged
+for a later comparison: do not import from it or edit it.
 
 ## Architecture Rules
 
