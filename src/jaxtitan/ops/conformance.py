@@ -356,6 +356,28 @@ def _format(row) -> str:
   return f"{text}  [{row['kernel_origin']}]"
 
 
+def speedups(rows) -> list[dict]:
+  """Per provider, and per provider and op: the geometric mean of the bench
+  speedups across shapes, which weighs every shape the same, and the
+  time-weighted speedup (total native time over total provider time), which
+  weighs them by how long they take. Neither is the end-to-end gain of a
+  training step, which also depends on how much of the step these ops take."""
+  timed = [r for r in rows if r.get("mode") == "bench" and r.get("status") == "pass" and "ms" in r]
+  groups = {}
+  for r in timed:
+    groups.setdefault((r["provider"], None), []).append(r)
+    groups.setdefault((r["provider"], r["op"]), []).append(r)
+  out = []
+  for (provider, op), rs in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
+    out.append({
+        "summary": "speedup", "provider": provider, "op": op or "all", "cases": len(rs),
+        "geomean": float(np.exp(np.mean([np.log(r["speedup"]) for r in rs]))),
+        "time_weighted": sum(r["native_ms"] for r in rs) / sum(r["ms"] for r in rs),
+        "min": min(r["speedup"] for r in rs), "max": max(r["speedup"] for r in rs),
+    })
+  return out
+
+
 def run(providers, modes, *, quick=False, ops_filter=None, cases_filter=None, out=None) -> list[dict]:
   import jax  # pylint: disable=g-import-not-at-top
 
@@ -411,6 +433,12 @@ def main(argv=None):
              ops_filter=set(filter(None, args.ops.split(","))),
              cases_filter=set(filter(None, args.cases.split(","))), out=out)
   failed = [r for r in rows if r["status"] in ("FAIL", "ERROR")]
+  for s in speedups(rows):
+    print(f"speedup {s['provider']:11s} {s['op']:9s} over {s['cases']} shapes: geomean "
+          f"{s['geomean']:.2f}x, time-weighted {s['time_weighted']:.2f}x "
+          f"({s['min']:.2f}-{s['max']:.2f}x)")
+    if out:
+      out.write(json.dumps(s) + "\n")
   print(f"{len(rows)} checks: {sum(r['status'] == 'pass' for r in rows)} passed, "
         f"{len(failed)} failed, {sum(r['status'] == 'skip' for r in rows)} skipped")
   return 1 if failed else 0

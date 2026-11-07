@@ -29,6 +29,11 @@ _THROTTLE = {
 }
 
 
+def _number(value):
+  """amd-smi reports unavailable readings as "N/A"."""
+  return value if isinstance(value, (int, float)) else None
+
+
 class _AmdSmi:
   name = "amd-smi energy counter"
 
@@ -44,11 +49,11 @@ class _AmdSmi:
     power = a.amdsmi_get_power_info(h)
     return {
         "energy_j": energy["energy_accumulator"] * energy["counter_resolution"] / 1e6,
-        "power_w": power.get("socket_power"),
-        "gfx_mhz": a.amdsmi_get_clock_info(h, a.AmdSmiClkType.GFX)["clk"],
-        "mem_mhz": a.amdsmi_get_clock_info(h, a.AmdSmiClkType.MEM)["clk"],
-        "temp_c": a.amdsmi_get_temp_metric(
-            h, a.AmdSmiTemperatureType.HOTSPOT, a.AmdSmiTemperatureMetric.CURRENT),
+        "power_w": _number(power.get("socket_power")),
+        "gfx_mhz": _number(a.amdsmi_get_clock_info(h, a.AmdSmiClkType.GFX)["clk"]),
+        "mem_mhz": _number(a.amdsmi_get_clock_info(h, a.AmdSmiClkType.MEM)["clk"]),
+        "temp_c": _number(a.amdsmi_get_temp_metric(
+            h, a.AmdSmiTemperatureType.HOTSPOT, a.AmdSmiTemperatureMetric.CURRENT)),
     }
 
   def violation(self, h) -> dict:
@@ -162,6 +167,11 @@ def read(path) -> list[dict]:
     return [json.loads(line) for line in f if line.strip()]
 
 
+def _mean(values):
+  values = [v for v in values if _number(v) is not None]
+  return sum(values) / len(values) if values else None
+
+
 def energy_between(samples, t0: float, t1: float) -> dict:
   """Per GPU: joules, mean watts, mean GFX clock, and throttle shares in [t0, t1].
 
@@ -183,8 +193,9 @@ def energy_between(samples, t0: float, t1: float) -> dict:
         "energy_j": last["energy_j"] - first["energy_j"],
         "seconds": seconds,
         "mean_power_w": (last["energy_j"] - first["energy_j"]) / seconds if seconds else None,
-        "mean_gfx_mhz": sum(s["gfx_mhz"] for s in inside if s.get("gfx_mhz")) / len(inside),
-        "max_temp_c": max((s["temp_c"] for s in inside if s.get("temp_c") is not None), default=None),
+        "mean_gfx_mhz": _mean(s.get("gfx_mhz") for s in inside),
+        "max_temp_c": max((s["temp_c"] for s in inside if _number(s.get("temp_c")) is not None),
+                          default=None),
         "throttle": {k: sum(t.get(k, 0) for t in throttles) / len(throttles)
                      for k in _THROTTLE} if throttles else None,
     }

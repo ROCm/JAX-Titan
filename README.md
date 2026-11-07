@@ -54,9 +54,11 @@ This is the target design; [What works](#what-works) lists what runs today.
 - The ROCm scaling book's training metrics: a run directory (`--run_dir`)
   with step records and timeline events, `env.json`, GPU power and energy,
   validation loss, traces and RCCL collective times, summarized as step-time
-  percentiles, MFU against the nominal and a calibrated peak, startup and
-  checkpoint costs, ETTR, energy per token, pipeline utilization, scaling
-  efficiency and Gate 0 ([docs/metrics.md](docs/metrics.md)).
+  percentiles, MFU (sustained, rolling and end to end, against the nominal and
+  a calibrated peak) and HFU, startup and checkpoint costs, ETTR, energy per
+  token, pipeline utilization, scaling efficiency and Gate 0, with figures of
+  MFU, loss and power over time and a per-op, per-stage FLOPs and
+  communication model ([docs/metrics.md](docs/metrics.md)).
 
 On 8x AMD Instinct MI355X, Llama 3.1 8B with 2 pipeline stages of 4 GPUs and
 65,536 tokens per step trains at 1.45 s per step (45.1k tokens/s, 10.5% MFU)

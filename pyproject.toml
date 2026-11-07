@@ -25,6 +25,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["chex", "pytest"]
+# Figures of training runs (jaxtitan.observability.plot).
+plots = ["matplotlib>=3.8"]
 # The `triton` and `gluon` operator providers. JAX-Triton itself comes from the
 # third_party/jax-triton submodule; see docs/getting_started.md.
 triton = ["triton>=3.7"]

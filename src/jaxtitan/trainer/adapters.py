@@ -267,11 +267,20 @@ def _maxtext(args, name, devices, optimizer):
   else:
     layout = _spmd_layout(args, mesh, model, optimizer, tokens, tokens, split_batch)
   tokens_per_step = num_mb * mb * seq
+  flops = model.flops_per_token(seq) * tokens_per_step
+  try:
+    from jaxtitan.observability import flops as flops_lib  # pylint: disable=g-import-not-at-top
+
+    hardware = flops + flops_lib.recompute_flops_per_token(
+        mt.llama_config(cfg), seq, cfg.remat_policy != "none") * tokens_per_step
+  except NotImplementedError:
+    hardware = None
   work = Workload(
       num_params=_num_params(model.abstract(args.seed)),
       tokens_per_step=tokens_per_step,
-      flops_per_step=model.flops_per_token(seq) * tokens_per_step,
+      flops_per_step=flops,
       vocab_size=cfg.vocab_size,
+      hardware_flops_per_step=hardware,
   )
   return layout, work
 
