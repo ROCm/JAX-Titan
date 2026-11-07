@@ -25,6 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["chex", "pytest"]
+# The `triton` and `gluon` operator providers. JAX-Triton itself comes from the
+# third_party/jax-triton submodule; see docs/getting_started.md.
+triton = ["triton>=3.7"]
 # MaxText models (jaxtitan.models.adapters.maxtext). The maxtext package
 # declares no dependencies; these are what its model code imports.
 maxtext = [

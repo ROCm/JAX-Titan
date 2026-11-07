@@ -33,12 +33,13 @@ jax's `MODULE.bazel` can pin an older XLA than the fix; the build script
 overrides it with the `xla` tree, and the Shardy that XLA pins with the
 patched `shardy` tree.
 
-The operator providers JAX-AITER and JAX-Triton are git submodules in
-`third_party/`, pinned to tested commits. Building JAX-AITER also needs its
-own AITER submodule:
+The operator providers JAX-AITER and JAX-Triton, and the Gluon GEMMs of
+gfx950-gluon-tutorials, are git submodules in `third_party/`, pinned to tested
+commits. JAX-AITER has AITER as its own submodule, which the `triton` provider
+takes AITER's Triton kernels from:
 
 ```bash
-git submodule update --init third_party/jax-aiter third_party/jax-triton
+git submodule update --init third_party/jax-triton third_party/gfx950-gluon-tutorials
 git submodule update --init --recursive third_party/jax-aiter   # with AITER
 ```
 
@@ -77,6 +78,10 @@ pip install --no-deps "https://github.com/ROCm/maxtext/releases/download/te-rocm
 # (prebuilt AITER JIT libraries, about two minutes).
 git submodule update --init --recursive third_party/jax-aiter
 scripts/build_jax_aiter.sh
+# Optional, for the Triton and Gluon operators: Triton from PyPI, which has the
+# AMD backend and Gluon, and JAX-Triton from its submodule.
+pip install "triton==3.9.0"
+pip install --no-deps -e third_party/jax-triton
 ```
 
 `--system-site-packages` exposes the container's TheRock `rocm` wheels. In
@@ -137,6 +142,7 @@ python -m pytest tests/
 # timings. Run TE and JAX-AITER in separate processes (see docs/pipelines.md).
 python -m jaxtitan.ops.conformance --providers=te,te_mxfp8,te_fp8
 python -m jaxtitan.ops.conformance --providers=aiter --modes=bench
+python -m jaxtitan.ops.conformance --providers=triton,gluon --modes=single,sharded,manual,mpmd,bench
 
 # Llama 3.1 8B, 2 stages x 4 MI355X, zero-bubble schedule, WikiText-103.
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
@@ -176,8 +182,10 @@ transformer settings, for example
 
 `--ops` picks operator providers per op, with native JAX as the fallback:
 `--ops=attention=te` runs TE's fused attention, and
-`--ops=attention=te,linear=te_fp8,swiglu=te_fp8` adds FP8 GEMMs. Providers
-whose kernels cannot run under `jax.vmap` (TE's GEMMs, all of JAX-AITER) need
+`--ops=attention=te,linear=te_fp8,swiglu=te_fp8` adds FP8 GEMMs, and
+`--ops=rms_norm=triton,rope=triton,linear=gluon` runs AITER's Triton RMSNorm and
+RoPE with Gluon GEMMs. Providers whose kernels cannot run under `jax.vmap`
+(TE's GEMMs, JAX-AITER, and the `triton` and `gluon` providers) need
 `--per_device=shard_map` when gradients are reduced per step; without it they
 fall back to native, and the trainer prints what each op ran on after
 compiling.

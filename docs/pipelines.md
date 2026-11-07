@@ -197,14 +197,17 @@ last. The loss falls from 3.51 to 2.75 in 20 steps.
 - Compiling took 53-54 s for the MaxText pipelines, 74-110 s for JAX-Titan's
   Llama and 123 s for FLUX.1.
 
-## Operator providers (2026-11-06, 8x MI355X)
+## Operator providers (2026-11-06 and 2026-11-07, 8x MI355X)
 
-`--ops` routes semantic ops to ROCm TE (the 2026-11-02 nightly wheel) or
+`--ops` routes semantic ops to ROCm TE (the 2026-11-02 nightly wheel),
 JAX-AITER (the `third_party/jax-aiter` submodule, built by
-`scripts/build_jax_aiter.sh`); everything else stays native JAX. Before any
-training run, `python -m jaxtitan.ops.conformance` checked every op against
-native JAX in bf16 and float32 on Llama 3.1 8B and FLUX.1 shapes; its rows
-are in [results/2026-11-06](results/2026-11-06) (`ops-conformance_*.jsonl`).
+`scripts/build_jax_aiter.sh`), or through JAX-Triton 0.5.0 and Triton 3.9.0
+to AITER's Triton kernels (`triton`) and the inter-wave Gluon BF16 GEMM of
+gfx950-gluon-tutorials (`gluon`); everything else stays native JAX. Before
+any training run, `python -m jaxtitan.ops.conformance` checked every op
+against native JAX in bf16 and float32 on Llama 3.1 8B and FLUX.1 shapes; its
+rows are in [results/2026-11-06](results/2026-11-06) and
+[results/2026-11-07](results/2026-11-07) (`ops-conformance_*.jsonl`).
 
 | Op | Provider | One GPU | vmap | Sharded | shard_map | MPMD step | Forward plus backward |
 |---|---|---|---|---|---|---|---|
@@ -216,6 +219,11 @@ are in [results/2026-11-06](results/2026-11-06) (`ops-conformance_*.jsonl`).
 | linear | `te`, `aiter` (BF16) | pass | no batching rule | pass | pass | pass | 0.93-1.05x |
 | linear, swiglu | `te_fp8`, `te_mxfp8` | pass (FP8 error) | broken batching rule | pass | pass | pass | 0.6-1.3x |
 | linear, swiglu | `aiter_mxfp4` | wrong (uncorrelated output) | | wrong | wrong | wrong | |
+| rms_norm | `triton` (AITER Triton) | pass | no batching rule | pass | pass | pass | 0.68x |
+| rope | `triton` (AITER Triton) | pass | no batching rule | pass | pass | pass | 0.94x |
+| swiglu | `triton` (AITER SiLU-and-mul) | pass | no batching rule | pass | pass | pass | 0.96x |
+| linear | `gluon` (inter-wave BF16 GEMM) | pass | no batching rule | pass | pass | pass | 0.43-0.54x |
+| swiglu | `gluon` (three Gluon GEMMs) | pass | no batching rule | pass | pass | pass | 0.50x |
 
 Providers decline what failed (vmap cases, and JAX-AITER attention in a
 process with TE), so those calls fall back to native. The FP8 and MXFP8
@@ -232,6 +240,9 @@ Training with the same layouts and batches as above:
 | Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=aiter` | 1.529 s | 42.9k tokens/s | 10.0% |
 | Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=te` + `te_fp8` GEMMs | 1.676 s | 39.1k tokens/s | 9.1% |
 | Llama 3.1 8B, 2 stages | per step (shard_map) | `attention=te` + `te_mxfp8` GEMMs | 1.747 s | 37.5k tokens/s | 8.7% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | native, 2026-11-07 | 1.689 s | 38.8k tokens/s | 9.0% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | `rms_norm=triton,rope=triton,swiglu=triton` | 1.696 s | 38.6k tokens/s | 9.0% |
+| Llama 3.1 8B, 2 stages | per step (shard_map) | `linear=gluon,swiglu=gluon` | 2.372 s | 27.6k tokens/s | 6.4% |
 | FLUX.1-dev, 4 stages | per microbatch | MaxDiffusion's attention | 7.269 s | 4.4 images/s | 4.9% |
 | FLUX.1-dev, 4 stages | per microbatch | `attention=native` (XLA) | 8.001 s | 4.0 images/s | 4.5% |
 | FLUX.1-dev, 4 stages | per microbatch | `attention=te` | 5.764 s | 5.6 images/s | 6.2% |
@@ -249,6 +260,25 @@ Training with the same layouts and batches as above:
 - **FP8 and MXFP8 GEMMs are slower end to end** (1.68 and 1.75 s against
   1.49 s in BF16): quantizing every GEMM's inputs in forward and backward
   costs more than the faster GEMMs save at Llama 3.1 8B's sizes.
+- **AITER's Triton kernels match native JAX but do not speed up training:**
+  forward plus backward, RMSNorm is 0.68x, RoPE 0.94x and SiLU-and-mul 0.96x,
+  since XLA already fuses these ops, and the Llama step is unchanged (1.696 s
+  against 1.689 s). The SiLU-and-mul kernel reads the gate and up projections
+  side by side, so `swiglu` multiplies by the stacked gate and up weights.
+- **The Gluon GEMM matches hipBLASLt only on large GEMMs:** alone, 547 against
+  548 TFLOPS at 4096x4096x4096, but 0.43-0.66x at Llama's per-GPU shapes
+  (2048 tokens), where its fixed 256x256 tiles make at most 128 workgroups for
+  256 CUs. With the transposes it needs, the Llama step is 1.40x slower. A
+  smaller-tile or stream-K variant comes next.
+- **Two JAX-Triton 0.5.0 limits, worked around:** it passes a kernel its
+  operand buffers and then its result buffers, whatever the order of its
+  pointer parameters, so AITER's RMSNorm forward, which takes its output
+  second, runs through a wrapper with its outputs last; and it passes scalar
+  arguments without divisibility hints, so the Gluon GEMM's direct-to-LDS
+  loads did not compile until a wrapper passed its sizes as constexprs.
+  Before the first fix, the RMSNorm kernel wrote out of bounds, and ROCm
+  dumped all GPU memory to a 502 GB `gpucore.<pid>.gpu`; `scripts/env.sh` now
+  sets `HSA_DISABLE_COREDUMP_ON_EXCEPTION=1`.
 - **Not usable yet:** JAX-AITER's MXFP4 GEMM returns output uncorrelated with
   the BF16 product (relative error 1.4) on this stack, though its own tests,
   which check finiteness, pass. JAX-AITER exposes no MoE kernels at its pin,

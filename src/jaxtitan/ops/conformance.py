@@ -16,7 +16,7 @@ its error is at most twice native bf16's, or below its quantization tolerance
            loss and gradients against the same step on native
   bench    forward plus backward time on one device, against native
 
-  python -m jaxtitan.ops.conformance --platform=rocm --providers=te,aiter
+  python -m jaxtitan.ops.conformance --platform=rocm --providers=te,aiter,triton,gluon
 """
 
 import argparse
@@ -79,6 +79,14 @@ def _linear_case(name, s, e, n, batch, quick=False):
   return Case("linear", name, make, (0,), quick)
 
 
+def _rope_case(name, s, h, d, batch, quick=False):
+  def make(rng, b=batch):
+    angles = np.arange(s)[:, None] * 10000.0 ** (-np.arange(0, d, 2) / d)
+    return (_normal(rng, (b, s, h, d)), np.cos(angles).astype(np.float32),
+            np.sin(angles).astype(np.float32)), {}
+  return Case("rope", name, make, (0,), quick)
+
+
 CASES = [
     _attention_case("small", 128, 4, 2, 64, True, 2, quick=True),
     _attention_case("llama3.1-8b", 2048, 32, 8, 128, True, 2),
@@ -90,7 +98,10 @@ CASES = [
     _linear_case("small", 64, 256, 256, 2, quick=True),
     _linear_case("llama3.1-8b-wq", 2048, 4096, 4096, 2),
     _linear_case("llama3.1-8b-wk", 2048, 4096, 1024, 2),
+    _rope_case("small", 64, 4, 64, 2, quick=True),
+    _rope_case("llama3.1-8b", 2048, 32, 128, 2),
 ]
+OPS = ("attention", "rms_norm", "swiglu", "linear", "rope")
 
 
 def _array_positions(args) -> list[int]:
@@ -146,7 +157,7 @@ class _Runner:
     from jaxtitan.ops import registry  # pylint: disable=g-import-not-at-top
 
     registry.reset_selections()
-    with registry.policy(registry.Policy({c: (provider,) for c in ("attention", "rms_norm", "swiglu", "linear")})):
+    with registry.policy(registry.Policy({op: (provider,) for op in OPS})):
       result = build()
     chosen = registry.selections()
     hit = [s for s in chosen if s.provider == provider]

@@ -6,8 +6,9 @@ Each op runs on the provider the current policy prefers (see
   ops.set_policy("attention=te:aiter,linear=te_mxfp8")
 
 Built-in providers: `native`; `te`, `te_mxfp8` and `te_fp8` (ROCm Transformer
-Engine); `aiter` and `aiter_mxfp4` (JAX-AITER). Packages can add more under
-the `jaxtitan.ops_providers` entry-point group.
+Engine); `aiter` and `aiter_mxfp4` (JAX-AITER); `triton` (AITER's Triton
+kernels) and `gluon` (gfx950 Gluon GEMMs), both through JAX-Triton. Packages
+can add more under the `jaxtitan.ops_providers` entry-point group.
 """
 
 import importlib
@@ -33,6 +34,7 @@ def _native_impls():
       "rms_norm": Impl(_native.rms_norm, "XLA"),
       "swiglu": Impl(_native.swiglu, "XLA"),
       "linear": Impl(_native.linear, "XLA"),
+      "rope": Impl(_native.rope, "XLA"),
   }
 
 
@@ -47,6 +49,8 @@ for _name, _module, _factory in (
     ("te_fp8", "jaxtitan.ops.providers.te", "fp8"),
     ("aiter", "jaxtitan.ops.providers.aiter", "bf16"),
     ("aiter_mxfp4", "jaxtitan.ops.providers.aiter", "mxfp4"),
+    ("triton", "jaxtitan.ops.providers.triton", "aiter"),
+    ("gluon", "jaxtitan.ops.providers.triton", "gluon"),
 ):
   register(Provider(_name, _lazy(_module, _factory)))
 
@@ -73,8 +77,16 @@ def linear(x, w):
   return registry.dispatch("linear", x, w)
 
 
+def rope(x, cos, sin):
+  """Rotary embedding on [batch, seq, heads, head_dim], split-halves layout.
+
+  `cos` and `sin` are [seq, head_dim // 2].
+  """
+  return registry.dispatch("rope", x, cos, sin)
+
+
 __all__ = [
     "Impl", "Policy", "Provider", "attention", "current_policy", "for_stage", "linear",
-    "policy", "register", "reset_selections", "rms_norm", "selections", "set_policy",
-    "summary", "swiglu",
+    "policy", "register", "reset_selections", "rms_norm", "rope", "selections",
+    "set_policy", "summary", "swiglu",
 ]

@@ -186,15 +186,10 @@ def _rope_freqs(cfg: LlamaConfig) -> jax.Array:
   return jnp.where(wavelen < s.original_context / s.high_freq_factor, freqs, scaled)
 
 
-def _rope(x: jax.Array, freqs: jax.Array) -> jax.Array:
-  """Rotary embedding on [batch, seq, heads, head_dim], split-halves layout."""
-  seq = x.shape[1]
-  angles = jnp.arange(seq, dtype=jnp.float32)[:, None] * freqs[None, :]
-  sin = jnp.sin(angles)[None, :, None, :]
-  cos = jnp.cos(angles)[None, :, None, :]
-  x1, x2 = jnp.split(x.astype(jnp.float32), 2, axis=-1)
-  out = jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
-  return out.astype(x.dtype)
+def _rope_tables(cfg: LlamaConfig, seq: int) -> tuple[jax.Array, jax.Array]:
+  """cos and sin of the rotary angles, [seq, head_dim // 2]."""
+  angles = jnp.arange(seq, dtype=jnp.float32)[:, None] * _rope_freqs(cfg)[None, :]
+  return jnp.cos(angles), jnp.sin(angles)
 
 
 def _decoder_layer(cfg: LlamaConfig, h: jax.Array, p: dict) -> jax.Array:
@@ -203,8 +198,8 @@ def _decoder_layer(cfg: LlamaConfig, h: jax.Array, p: dict) -> jax.Array:
   q = ops.linear(x, p["wq"]).reshape(b, s, cfg.num_query_heads, cfg.head_dim)
   k = ops.linear(x, p["wk"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
   v = ops.linear(x, p["wv"]).reshape(b, s, cfg.num_kv_heads, cfg.head_dim)
-  freqs = _rope_freqs(cfg)
-  q, k = _rope(q, freqs), _rope(k, freqs)
+  cos, sin = _rope_tables(cfg, s)
+  q, k = ops.rope(q, cos, sin), ops.rope(k, cos, sin)
   attn = ops.attention(q, k, v).reshape(b, s, cfg.num_query_heads * cfg.head_dim)
   h = h + ops.linear(attn, p["wo"])
   x = ops.rms_norm(h, p["mlp_norm"], cfg.norm_eps)
