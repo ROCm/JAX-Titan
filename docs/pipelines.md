@@ -205,17 +205,28 @@ only approximated) and skips the update when the norm is not finite; every
 result above used per-stage clipping. MaxText's attention can run through
 `jaxtitan.ops` (`--ops=attention=te` or `aiter`), and `--parallel=dp` runs
 an adapter model's stages without the pipeline, as the Gate 0 reference.
-Medians over steps 5-29, Llama 3.1 8B with 65,536 tokens per step, 2 stages of
-4 GPUs, zero-bubble H1; per-step records are in
+Medians over steps 5-29 (from step 3 in the shorter checks; MaxText's
+attention is the median of three runs), Llama 3.1 8B with 65,536 tokens per
+step, 2 stages of 4 GPUs, zero-bubble H1; per-step records are in
 [results/2026-11-07](results/2026-11-07).
 
 | Model code | Attention | Gradients reduced | Step | Against per-stage clipping |
 |---|---|---|---|---|
-| MaxText | MaxText's (native JAX) | per microbatch | 2.093 s | 2.028 s (+3.2%) |
-| MaxText | TE fused attention | per microbatch | 1.860 s | |
+| MaxText | MaxText's (native JAX) | per microbatch | 2.098 s | 2.028 s (+3.4%) |
+| MaxText | TE fused attention | per microbatch | 1.867 s | |
 | MaxText | JAX-AITER flash attention | per microbatch | 1.876 s | |
 | MaxText, no pipeline (`--parallel=dp`, 8 GPUs) | MaxText's | per step | 0.733 s | |
-| JAX-Titan's Llama | native | per step | 1.697 s | 1.457 s (+16%) |
+| JAX-Titan's Llama | native | per step | 1.502 s | 1.457 s (+3.1%) |
+| JAX-Titan's Llama | TE fused attention | per step | 1.310 s | 1.26 s (+4%) |
+
+MaxText's own trainer (`maxtext.trainers.pre_train.train`, the same MaxText
+0.2.5 checkout, synthetic data, the same 65,536 tokens per step, MaxText's
+attention, full remat):
+
+| MaxText trainer layout | Step | Tokens/s per GPU | Against JAX-Titan |
+|---|---|---|---|
+| FSDP over 8 GPUs | 0.723 s | 11.3k | `--parallel=dp` with MaxText's layers: 0.733 s |
+| Its pipeline: 2 stages x 4 GPUs (FSDP inside), 8 microbatches, 16 layers per stage | 1.763 s | 4.6k | MPMD pipeline of MaxText's layers: 2.098 s; of JAX-Titan's Llama: 1.502 s |
 
 - **Gate 0 passes on one node.** Against `--parallel=dp` with the same
   weights and batches, every pipeline stays within 8.7e-4 relative loss over
@@ -224,21 +235,34 @@ Medians over steps 5-29, Llama 3.1 8B with 65,536 tokens per step, 2 stages of
   up to 54) then amplify bf16 rounding differences to 1-7%, so the gate is
   K = 10 steps with a tolerance of 2e-3
   (`summarize --gate0`, [maxtext-llama3.1-8b_gate0.json](results/2026-11-07/maxtext-llama3.1-8b_gate0.json)).
-- **TE and JAX-AITER attention make MaxText's pipeline 1.12-1.13x faster.**
+- **TE and JAX-AITER attention make MaxText's pipeline 1.12x faster.**
   JAX-AITER runs without `shard_map` here, since per-microbatch reduction has
   no `vmap` over parameter copies.
-- **Global clipping costs 3% with per-microbatch reduction and 16% with
-  per-step reduction.** An A/B at the previous two commits (1.457 s at
-  `d18cbca`, 1.452 s at `e9dc50f`) rules out the operator work. Traces show
-  the same compute and exposed communication per step, but 0.33 s more idle
-  time on both meshes: the update needs both stages' gradient norms, and
-  Shardy merges that dependency into the first mesh's last backward fragment,
-  so it waits for the second mesh's whole gradient all-reduce before its own
-  backward pass, and the all-reduces run one after the other instead of
-  together. Wrapping the norm and the update in named computations of their
-  own (1.701 s) and the Shardy options
+- **Global clipping costs 3-4%.** As first written it cost 16% with per-step
+  reduction (1.70 s; an A/B at the previous two commits, 1.457 s at
+  `d18cbca` and 1.452 s at `e9dc50f`, ruled out the operator work). Traces
+  showed the same compute and exposed communication per step but 0.33 s more
+  idle time on both meshes. The update needs every stage's gradient norm, and
+  Shardy merged it, as an inferred op, into the first mesh's last backward
+  fragment, so that fragment waited for the second mesh's whole gradient
+  all-reduce, and the two all-reduces ran one after the other. Shardy never
+  merges two user fragments, but merges user fragments with compatible stage
+  ids: each stage's gradient reduction with its sum of squares, and its
+  update, are now named computations with stage ids of their own, so only the
+  small update waits for the other stages' sums (1.502 s). Named computations
+  that share stage ids (1.701 s) and the Shardy options
   `mpmd_absorb_inferred_fragments_on_entry_point_function` (1.69-1.74 s) and
-  `mpmd_merge_inferred_after_scheduling=false` (1.68-1.73 s) do not help.
+  `mpmd_merge_inferred_after_scheduling=false` (1.68-1.73 s) did not help.
+  With per-microbatch reduction the same structure gained 3% (2.036 s) but
+  made TE attention's custom partitioning fail to compile, so that path keeps
+  the inferred update.
+- **MaxText's own pipeline is 1.19x faster than the MPMD pipeline of
+  MaxText's layers, and 1.17x slower than the MPMD pipeline of JAX-Titan's
+  Llama.** MaxText's pipeline reduces gradients once per step, the adapter
+  in every microbatch; JAX-Titan's Llama reduces once per step. Per-step
+  reduction for adapter models (per-rank parameter copies under MaxText's
+  sharding constraints) is the next step for them. Without a pipeline the two
+  trainers match (0.723 s and 0.733 s).
 
 ## Operator providers (2026-11-06 and 2026-11-07, 8x MI355X)
 

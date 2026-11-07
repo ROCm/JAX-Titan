@@ -152,6 +152,26 @@ python -m jaxtitan.observability.collectives runs/a/rccl_inspector
   ([collectives](results/2026-11-07/llama3.1-8b_pp2_rccl-inspector_collectives.json)).
   MPMD's cross-mesh transfers do not go through RCCL, so the Inspector does
   not see them.
+- **Detector overhead** (`detectors --repeats 3`, MaxText Llama 3.1 8B on 2
+  stages of 4 GPUs; the baseline's three runs lie within 0.2%,
+  [table](results/2026-11-07/maxtext-llama3.1-8b_pp2_detector-overhead.json)):
+
+  | Detector | Step p50 | Overhead |
+  |---|---|---|
+  | Baseline (XLA stuck and terminate timeouts and RCCL RAS on, as by default) | 2.098 s | |
+  | Step watchdog | 2.097 s | 0.0% |
+  | RCCL RAS (measured by turning it off) | 2.098 s | 0.0% |
+  | RCCL Inspector | 2.095 s | -0.1% |
+  | ROCr Debug Agent | 2.098 s | 0.0% |
+  | ROCr Debug Agent with precise ALU exceptions | 2.112 s | +0.7% |
+  | XLA progress tracking (16 thunks) | 2.285 s | +8.9% |
+  | XLA NaN/Inf checks, checksum tracing | fails | |
+
+  Everything but progress tracking can stay on; progress tracking is for
+  reproducing a hang. XLA's NaN, Inf and checksum checks fail on any program
+  that returns a tuple ("Module output slices must not contain tuple
+  shapes"): `GetModuleOutputSlices` in `gpu_executable.cc` lists the result
+  tuple itself, at upstream XLA's head too, so they need an XLA fix first.
 
 ## Not covered yet
 

@@ -1,0 +1,177 @@
+{
+ "measured": {
+  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/recipe2",
+  "attempts": 2,
+  "steady_step_s": 1.8861404657363892,
+  "tokens_per_step": 65536,
+  "committed_steps": 1000,
+  "lost_steps": 120,
+  "wall_s": 2552.4682734012604,
+  "productive_s": 1886.1404657363892,
+  "losses": {
+   "u0_s": 170.9568793773651,
+   "w_cp_s": 158.78287160396576,
+   "lost_work_s": 224.75642371177673,
+   "eval_s": 23.162312984466553,
+   "queue_s": 0.0,
+   "other_s": 88.66931998729706
+  },
+  "ettr": 0.738947663088104,
+  "steady_tokens_per_s": 34746.08662001923,
+  "effective_tokens_per_s": 25675.539509320053,
+  "u0_stages_s": [
+   {
+    "launch": 0.0,
+    "python_imports": 0.09263086318969727,
+    "jax_init": 2.168135643005371,
+    "setup": 4.572210073471069,
+    "init": 8.830759763717651,
+    "compile": 40.23828983306885,
+    "data": 0.05197024345397949,
+    "first_step_excess": 16.872036576271057,
+    "other": 0.0,
+    "total": 72.80537712574005
+   },
+   {
+    "launch": 0.0,
+    "python_imports": 0.09778165817260742,
+    "jax_init": 2.173105239868164,
+    "setup": 4.54743504524231,
+    "restore": 31.012689352035522,
+    "compile": 43.236987590789795,
+    "data": 0.05240178108215332,
+    "first_step_excess": 17.056276679039,
+    "other": 0.0,
+    "total": 98.15150225162506
+   }
+  ],
+  "w_cp_s": 39.474699437618256,
+  "restore_s": 31.012689352035522
+ },
+ "projection": {
+  "w_cp_s": 2.4,
+  "restart_s": 175.0,
+  "rows": [
+   {
+    "nodes": 1,
+    "failures_per_1000_node_days": 2.5,
+    "mttf_h": 9600.0,
+    "checkpoint_interval_h": 3.5772643333581082,
+    "young_interval_h": 3.5777087639996634,
+    "ettr": 0.9996223287270968
+   },
+   {
+    "nodes": 8,
+    "failures_per_1000_node_days": 2.5,
+    "mttf_h": 1200.0,
+    "checkpoint_interval_h": 1.2644666586633722,
+    "young_interval_h": 1.2649110640673518,
+    "ettr": 0.9989059749267646
+   },
+   {
+    "nodes": 128,
+    "failures_per_1000_node_days": 2.5,
+    "mttf_h": 75.0,
+    "checkpoint_interval_h": 0.3157834777342532,
+    "young_interval_h": 0.31622776601683794,
+    "ettr": 0.9951457255782993
+   },
+   {
+    "nodes": 1024,
+    "failures_per_1000_node_days": 2.5,
+    "mttf_h": 9.375,
+    "checkpoint_interval_h": 0.11135939612298505,
+    "young_interval_h": 0.11180339887498948,
+    "ettr": 0.9829908518682898
+   },
+   {
+    "nodes": 2048,
+    "failures_per_1000_node_days": 2.5,
+    "mttf_h": 4.6875,
+    "checkpoint_interval_h": 0.0786131217072041,
+    "young_interval_h": 0.07905694150420949,
+    "ettr": 0.972992911033057
+   },
+   {
+    "nodes": 1,
+    "failures_per_1000_node_days": 3.8,
+    "mttf_h": 6315.789473684212,
+    "checkpoint_interval_h": 2.901460573012947,
+    "young_interval_h": 2.901905000440047,
+    "ettr": 0.9995329422591618
+   },
+   {
+    "nodes": 8,
+    "failures_per_1000_node_days": 3.8,
+    "mttf_h": 789.4736842105265,
+    "checkpoint_interval_h": 1.0255339557730276,
+    "young_interval_h": 1.0259783520851542,
+    "ettr": 0.9986397374876005
+   },
+   {
+    "nodes": 128,
+    "failures_per_1000_node_days": 3.8,
+    "mttf_h": 49.342105263157904,
+    "checkpoint_interval_h": 0.25605033610611516,
+    "young_interval_h": 0.25649458802128855,
+    "ettr": 0.9938325745334005
+   },
+   {
+    "nodes": 1024,
+    "failures_per_1000_node_days": 3.8,
+    "mttf_h": 6.167763157894738,
+    "checkpoint_interval_h": 0.09024063137431945,
+    "young_interval_h": 0.09068453126375146,
+    "ettr": 0.9775809801556734
+   },
+   {
+    "nodes": 2048,
+    "failures_per_1000_node_days": 3.8,
+    "mttf_h": 3.083881578947369,
+    "checkpoint_interval_h": 0.06367997267796173,
+    "young_interval_h": 0.06412364700532214,
+    "ettr": 0.9638221213810966
+   },
+   {
+    "nodes": 1,
+    "failures_per_1000_node_days": 17.5,
+    "mttf_h": 1371.4285714285716,
+    "checkpoint_interval_h": 1.3518023996401929,
+    "young_interval_h": 1.3522468075656264,
+    "ettr": 0.9989790445509971
+   },
+   {
+    "nodes": 8,
+    "failures_per_1000_node_days": 17.5,
+    "mttf_h": 171.42857142857144,
+    "checkpoint_interval_h": 0.4776471025806742,
+    "young_interval_h": 0.4780914437337574,
+    "ettr": 0.9969318495358666
+   },
+   {
+    "nodes": 128,
+    "failures_per_1000_node_days": 17.5,
+    "mttf_h": 10.714285714285715,
+    "checkpoint_interval_h": 0.11907882965444012,
+    "young_interval_h": 0.11952286093343935,
+    "ettr": 0.9843947849739674
+   },
+   {
+    "nodes": 1024,
+    "failures_per_1000_node_days": 17.5,
+    "mttf_h": 1.3392857142857144,
+    "checkpoint_interval_h": 0.0418144369003336,
+    "young_interval_h": 0.042257712736425826,
+    "ettr": 0.9332143184600111
+   },
+   {
+    "nodes": 2048,
+    "failures_per_1000_node_days": 17.5,
+    "mttf_h": 0.6696428571428572,
+    "checkpoint_interval_h": 0.0294379234506962,
+    "young_interval_h": 0.029880715233359837,
+    "ettr": 0.8853763927006175
+   }
+  ]
+ }
+}

@@ -245,6 +245,10 @@ The tokenizer comes from a sibling MaxText checkout (override with
 
 ## Results
 
+[recipes/maxtext-llama3.1-8b.md](recipes/maxtext-llama3.1-8b.md) runs
+MaxText's Llama 3.1 8B with TE attention for 1,000 steps and lists what to
+expect: step time, loss curve, startup and checkpoint costs, energy and ETTR.
+
 [pipelines.md](pipelines.md#results-2026-11-05-8x-mi355x) has the step time,
 memory and bubble of every schedule and layout on 8x MI355X. For Llama 3.1
 8B with 65,536 tokens per step, the 2-stage zero-bubble pipeline takes 1.43 s

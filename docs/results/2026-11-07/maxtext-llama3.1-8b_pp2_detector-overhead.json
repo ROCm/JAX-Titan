@@ -1,0 +1,184 @@
+{
+ "baseline_p50_s": 2.0978002548217773,
+ "trainer_args": [
+  "--model=maxtext:llama3.1-8b",
+  "--num_stages=2",
+  "--microbatches=8",
+  "--microbatch_size=4",
+  "--seq_len=2048",
+  "--steps=16"
+ ],
+ "detectors": [
+  {
+   "detector": "baseline",
+   "p50_s": 2.0978002548217773,
+   "runs": [
+    {
+     "run_dir": "baseline",
+     "p50_s": 2.095623016357422
+    },
+    {
+     "run_dir": "baseline.1",
+     "p50_s": 2.0992283821105957
+    },
+    {
+     "run_dir": "baseline.2",
+     "p50_s": 2.0978002548217773
+    }
+   ],
+   "overhead": 0.0
+  },
+  {
+   "detector": "watchdog",
+   "p50_s": 2.097417116165161,
+   "runs": [
+    {
+     "run_dir": "watchdog",
+     "p50_s": 2.0957038402557373
+    },
+    {
+     "run_dir": "watchdog.1",
+     "p50_s": 2.0996084213256836
+    },
+    {
+     "run_dir": "watchdog.2",
+     "p50_s": 2.097417116165161
+    }
+   ],
+   "overhead": -0.0001826382925331771
+  },
+  {
+   "detector": "progress_tracking",
+   "p50_s": 2.284823179244995,
+   "runs": [
+    {
+     "run_dir": "progress_tracking",
+     "p50_s": 2.2838525772094727
+    },
+    {
+     "run_dir": "progress_tracking.1",
+     "p50_s": 2.2934834957122803
+    },
+    {
+     "run_dir": "progress_tracking.2",
+     "p50_s": 2.284823179244995
+    }
+   ],
+   "overhead": 0.08915192187308918
+  },
+  {
+   "detector": "detect_nan_inf",
+   "p50_s": null,
+   "runs": [
+    {
+     "run_dir": "detect_nan_inf",
+     "failed": "exit 1"
+    },
+    {
+     "run_dir": "detect_nan_inf.1",
+     "failed": "exit 1"
+    },
+    {
+     "run_dir": "detect_nan_inf.2",
+     "failed": "exit 1"
+    }
+   ],
+   "failed": true
+  },
+  {
+   "detector": "checksum_tracing",
+   "p50_s": null,
+   "runs": [
+    {
+     "run_dir": "checksum_tracing",
+     "failed": "exit 1"
+    },
+    {
+     "run_dir": "checksum_tracing.1",
+     "failed": "exit 1"
+    },
+    {
+     "run_dir": "checksum_tracing.2",
+     "failed": "exit 1"
+    }
+   ],
+   "failed": true
+  },
+  {
+   "detector": "rccl_ras_off",
+   "p50_s": 2.0984020233154297,
+   "runs": [
+    {
+     "run_dir": "rccl_ras_off",
+     "p50_s": 2.0946907997131348
+    },
+    {
+     "run_dir": "rccl_ras_off.1",
+     "p50_s": 2.0984020233154297
+    },
+    {
+     "run_dir": "rccl_ras_off.2",
+     "p50_s": 2.1018152236938477
+    }
+   ],
+   "overhead": -0.00028677464421311694
+  },
+  {
+   "detector": "rccl_inspector",
+   "p50_s": 2.0946648120880127,
+   "runs": [
+    {
+     "run_dir": "rccl_inspector",
+     "p50_s": 2.097195625305176
+    },
+    {
+     "run_dir": "rccl_inspector.1",
+     "p50_s": 2.090261697769165
+    },
+    {
+     "run_dir": "rccl_inspector.2",
+     "p50_s": 2.0946648120880127
+    }
+   ],
+   "overhead": -0.001494633593716932
+  },
+  {
+   "detector": "debug_agent",
+   "p50_s": 2.0976181030273438,
+   "runs": [
+    {
+     "run_dir": "debug_agent",
+     "p50_s": 2.1036417484283447
+    },
+    {
+     "run_dir": "debug_agent.1",
+     "p50_s": 2.090864658355713
+    },
+    {
+     "run_dir": "debug_agent.2",
+     "p50_s": 2.0976181030273438
+    }
+   ],
+   "overhead": -8.682990385522338e-05
+  },
+  {
+   "detector": "debug_agent_precise",
+   "p50_s": 2.111984968185425,
+   "runs": [
+    {
+     "run_dir": "debug_agent_precise",
+     "p50_s": 2.111984968185425
+    },
+    {
+     "run_dir": "debug_agent_precise.1",
+     "p50_s": 2.096738576889038
+    },
+    {
+     "run_dir": "debug_agent_precise.2",
+     "p50_s": 2.1126163005828857
+    }
+   ],
+   "overhead": 0.00676170828516387
+  }
+ ]
+}

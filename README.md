@@ -69,10 +69,15 @@ layout measured, and the reasons for the gap. With TE's fused attention
 Llama 3.1 8B runs the same pipeline at 2.03 s per step, with gradients reduced
 per microbatch, and FLUX.1-dev (12B) trains at 4.4 images/s at 1024x1024 on 4
 stages of 2 GPUs, 5.6 images/s with TE attention. These numbers clip each
-stage's gradients by its own norm. Clipping by one norm over all stages costs
-3% on MaxText's pipeline (2.09 s; 1.86 s with TE attention) and, until a
-scheduling stall is fixed, 16% on the default per-step reduction (1.70 s);
-see [docs/pipelines.md](docs/pipelines.md#global-gradient-clipping-maxtext-attention-and-gate-0-2026-11-07-8x-mi355x).
+stage's gradients by its own norm; clipping by one norm over all stages, as
+now, costs 3-4% (1.50 s, 1.31 s with TE attention, and 2.10 s for MaxText's
+layers, 1.87 s with TE attention). MaxText's own trainer runs its pipeline at
+1.76 s per step and FSDP at 0.72 s; see
+[docs/pipelines.md](docs/pipelines.md#global-gradient-clipping-maxtext-attention-and-gate-0-2026-11-07-8x-mi355x).
+[docs/recipes/maxtext-llama3.1-8b.md](docs/recipes/maxtext-llama3.1-8b.md) is
+the recipe for MaxText's Llama 3.1 8B with TE attention: 1,000 steps with
+validation, checkpoints and a rehearsed restart, with its expected step time,
+loss curve, startup and checkpoint costs, energy and ETTR.
 
 ```python
 from jaxtitan import mpmd as jt_mpmd
