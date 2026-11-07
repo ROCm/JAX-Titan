@@ -17,14 +17,18 @@ import dataclasses
 import functools
 import json
 import os
+import socket
 import time
 
 from jaxtitan import paths
 from jaxtitan.trainer.layout import Layout
 from jaxtitan.trainer.layout import Workload
 from jaxtitan.trainer.layout import abstract
+from jaxtitan.trainer.layout import placement as layout_placement
 
 _NORM_PARAMS = ("attn_norm", "mlp_norm", "final_norm")
+# Synthetic validation batches come from steps no training run reaches.
+_EVAL_STEPS = 10**9
 
 
 def parse_args(argv=None):
@@ -119,6 +123,10 @@ def parse_args(argv=None):
   parser.add_argument("--lr", type=float, default=3e-4)
   parser.add_argument("--warmup_steps", type=int, default=10)
   parser.add_argument(
+      "--max_grad_norm", type=float, default=1.0,
+      help="Clip by the gradient norm over all stages together.",
+  )
+  parser.add_argument(
       "--data",
       default=str(paths.work_dir() / "data/wikitext103_train.llama3.bin"),
       help="uint32 token file, or 'synthetic'. maxdiffusion: models always "
@@ -129,10 +137,49 @@ def parse_args(argv=None):
       "--peak_tflops_per_device", type=float, default=2500.0,
       help="Dense BF16 peak used for MFU; 2500 for MI355X.",
   )
-  parser.add_argument("--log_file", default="")
+  parser.add_argument(
+      "--log_file", default="",
+      help="JSONL of step records and timeline events (jaxtitan.observability.records).",
+  )
+  parser.add_argument(
+      "--run_dir", default="",
+      help="Writes train.jsonl (unless --log_file is given), env.json, power.jsonl and, at "
+      "the end, results.json here, the ROCm scaling book's runs/<cell>/ layout; see "
+      "docs/metrics.md.",
+  )
+  parser.add_argument(
+      "--eval_every", type=int, default=0,
+      help="Steps between validation passes, and one after the last step; 0 turns them off.",
+  )
+  parser.add_argument(
+      "--eval_batches", type=int, default=4,
+      help="Batches of one step's size per validation pass, the same every pass.",
+  )
+  parser.add_argument(
+      "--eval_data",
+      default=str(paths.work_dir() / "data/wikitext103_validation.llama3.bin"),
+      help="uint32 token file to validate on. Synthetic training data validates on "
+      "held-out synthetic batches.",
+  )
+  parser.add_argument(
+      "--power_sample_s", type=float, default=1.0,
+      help="With --run_dir, seconds between GPU power, energy, clock and throttle samples "
+      "into power.jsonl; 0 turns sampling off.",
+  )
+  parser.add_argument(
+      "--rccl_inspector", action="store_true",
+      help="Load the RCCL Inspector (scripts/build_rccl_inspector.sh, or "
+      "$JAXTITAN_RCCL_INSPECTOR) to record every collective into <run_dir>/rccl_inspector.",
+  )
   parser.add_argument(
       "--checkpoint_dir", default="",
       help="Saves training state here, and resumes from its latest checkpoint.",
+  )
+  parser.add_argument(
+      "--init_from", default="",
+      help="maxtext: models start from this MaxText parameter checkpoint, e.g. "
+      "pretrained weights converted with MaxText's checkpoint_conversion/to_maxtext.py, "
+      "instead of a random initialization. A checkpoint in --checkpoint_dir wins.",
   )
   parser.add_argument(
       "--checkpoint_every", type=int, default=0,
@@ -145,6 +192,16 @@ def parse_args(argv=None):
   )
   parser.add_argument(
       "--profile_dir", default=str(paths.work_dir() / "profiles"),
+  )
+  parser.add_argument(
+      "--step_timeout", type=float, default=300.0,
+      help="Exit when the first step runs longer than this many seconds, or a "
+      "later step longer than this or 10x the median step; 0 turns it off.",
+  )
+  parser.add_argument(
+      "--fail_at_step", type=int, default=0,
+      help="Exit at once with code 75 after this many steps, without finishing saves or "
+      "logging an end event, to rehearse a restart (ETTR, restart cost, lost work).",
   )
   parser.add_argument("--platform", default="", help="'cpu' runs on 8 CPU devices.")
   parser.add_argument("--seed", type=int, default=0)
@@ -256,7 +313,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
   loss_sharding = NamedSharding(meshes[-1], P())
 
   train_step = jt_mpmd.make_train_step(
-      stage_fns, optimizer, mesh=meshes[0],
+      stage_fns, optimizer, max_grad_norm=args.max_grad_norm, mesh=meshes[0],
       copy_axes=[llama.device_copy_axes(s[0]) for s in shapes] if per_step else None,
       param_specs=[s[0] for s in specs], per_device=args.per_device,
   )
@@ -264,7 +321,7 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
       train_step,
       config,
       in_shardings=(param_shardings, opt_shardings, token_sharding, target_sharding),
-      out_shardings=(param_shardings, opt_shardings, loss_sharding),
+      out_shardings=(param_shardings, opt_shardings, loss_sharding, loss_sharding),
       donate_argnums=(0, 1),
   )
 
@@ -275,9 +332,18 @@ def _build_mpmd(args, cfg, devices, optimizer) -> Layout:
         jax.device_put(batch[..., 1:], target_sharding),
     )
 
+  eval_step = mpmd.jit(
+      functools.partial(jt_mpmd.pipeline_loss, stage_fns),
+      jt_mpmd.make_config(topology, None, options, num_stages=num_stages),
+      in_shardings=(param_shardings, token_sharding, target_sharding),
+      out_shardings=loss_sharding,
+  )
   batch_spec = jax.ShapeDtypeStruct((num_mb, mb, seq), jnp.int32)
   return Layout(
-      init, abstract_state, jitted, batch_spec, batch_spec, put_batch, f"mpmd:{num_stages}"
+      init, abstract_state, jitted, batch_spec, batch_spec, put_batch, f"mpmd:{num_stages}",
+      placement=layout_placement(
+          topology, [jt_mpmd.mesh_name(i % num_meshes) for i in range(num_stages)]),
+      eval_step=eval_step,
   )
 
 
@@ -286,7 +352,7 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
   import jax  # pylint: disable=g-import-not-at-top
   import jax.numpy as jnp  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
-  import optax  # pylint: disable=g-import-not-at-top
+  from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
   from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
 
@@ -333,14 +399,17 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
 
   def train_step(params, opt_state, tokens, targets):
     loss, grads = jax.value_and_grad(loss_fn)(params, tokens, targets)
-    updates, opt_state = optimizer.update(grads, opt_state, params)
-    return optax.apply_updates(params, updates), opt_state, loss
+    norm = jt_mpmd.global_grad_norm([grads])
+    params, opt_state = jt_mpmd.clipped_update(
+        optimizer, params, grads, opt_state, norm, args.max_grad_norm)
+    return params, opt_state, jnp.where(jnp.isfinite(norm), loss, jnp.nan), norm
 
   param_shardings, opt_shardings = shardings
+  scalar = NamedSharding(mesh, P())
   jitted = jax.jit(
       train_step,
       in_shardings=(param_shardings, opt_shardings, batch_sharding, batch_sharding),
-      out_shardings=(param_shardings, opt_shardings, NamedSharding(mesh, P())),
+      out_shardings=(param_shardings, opt_shardings, scalar, scalar),
       donate_argnums=(0, 1),
   )
 
@@ -350,17 +419,41 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
         jax.device_put(batch[:, 1:], batch_sharding),
     )
 
+  eval_step = jax.jit(
+      loss_fn, in_shardings=(param_shardings, batch_sharding, batch_sharding),
+      out_shardings=scalar,
+  )
   batch = args.microbatches * args.microbatch_size
   batch_spec = jax.ShapeDtypeStruct((batch, args.seq_len), jnp.int32)
   return Layout(
-      init, abstract(shapes, shardings), jitted, batch_spec, batch_spec, put_batch, "spmd"
+      init, abstract(shapes, shardings), jitted, batch_spec, batch_spec, put_batch, "spmd",
+      placement=layout_placement({"mesh": mesh}, ["mesh"]), eval_step=eval_step,
   )
 
 
+def _enable_rccl_inspector(run_dir: str):
+  """Loads the RCCL Inspector into RCCL, which reads these before JAX starts it."""
+  plugin = os.environ.get("JAXTITAN_RCCL_INSPECTOR") or str(
+      paths.work_dir() / "lib/librccl-profiler-inspector.so")
+  if not os.path.exists(plugin):
+    raise FileNotFoundError(f"{plugin} is missing; build it with scripts/build_rccl_inspector.sh")
+  out = os.path.join(run_dir or ".", "rccl_inspector")
+  os.makedirs(out, exist_ok=True)
+  os.environ.setdefault("NCCL_PROFILER_PLUGIN", plugin)
+  os.environ.setdefault("NCCL_INSPECTOR_ENABLE", "1")
+  os.environ.setdefault("NCCL_INSPECTOR_DUMP_DIR", out)
+  os.environ.setdefault("NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS", "1000000")
+
+
 def main(argv=None):
+  main_start = time.time()
   args = parse_args(argv)
   if args.platform == "cpu":
     os.environ["JAX_PLATFORMS"] = "cpu"
+  if args.run_dir:
+    os.makedirs(args.run_dir, exist_ok=True)
+  if args.rccl_inspector:
+    _enable_rccl_inspector(args.run_dir)
 
   import jax  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
@@ -373,12 +466,27 @@ def main(argv=None):
   from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from jaxtitan.data.text import WindowSampler  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
+  from jaxtitan.observability import records  # pylint: disable=g-import-not-at-top
+
+  devices = jax.devices()
+  jax_ready = time.time()
+  if args.run_dir and not args.log_file:
+    index = jax.process_index()
+    args.log_file = os.path.join(args.run_dir, f"train.p{index}.jsonl" if index else "train.jsonl")
+  log = records.Log(args.log_file)
+  launch = os.environ.get("JAXTITAN_LAUNCH_TIME")
+  log.event(
+      "start", launch_time=float(launch) if launch else None,
+      process_start=records.process_start_time(), main_start=main_start, jax_ready=jax_ready,
+      host=socket.gethostname(), pid=os.getpid(), process_index=jax.process_index(),
+      process_count=jax.process_count(), num_devices=len(devices),
+      device_kind=devices[0].device_kind, jax_version=jax.__version__, args=vars(args),
+  )
 
   ops.set_policy(args.ops)
   adapter = ":" in args.model
   if args.reduce_grads is None:
     args.reduce_grads = "microbatch" if adapter else "step"
-  devices = jax.devices()
   tp = f", tensor parallel {args.tensor_parallel}" if args.tensor_parallel > 1 else ""
   if args.parallel == "mpmd":
     description = (
@@ -399,10 +507,8 @@ def main(argv=None):
       0.0, args.lr, args.warmup_steps, max(args.steps, args.warmup_steps + 1),
       end_value=args.lr * 0.1,
   )
-  optimizer = optax.chain(
-      optax.clip_by_global_norm(1.0),
-      optax.adamw(lr, b1=0.9, b2=0.95, eps=1e-8, weight_decay=0.1, mask=_decay_mask),
-  )
+  # Each step clips by the global gradient norm (--max_grad_norm) before this.
+  optimizer = optax.adamw(lr, b1=0.9, b2=0.95, eps=1e-8, weight_decay=0.1, mask=_decay_mask)
 
   mb, num_mb, seq = args.microbatch_size, args.microbatches, args.seq_len
   if adapter:
@@ -410,6 +516,8 @@ def main(argv=None):
 
     layout, work = adapters.build(args, devices, optimizer)
   else:
+    if args.init_from:
+      raise NotImplementedError("--init_from loads MaxText parameter checkpoints for maxtext: models")
     cfg = llama.FLAVORS[args.model]
     build = _build_mpmd if args.parallel == "mpmd" else _build_spmd
     layout = build(args, cfg, devices, optimizer)
@@ -424,6 +532,18 @@ def main(argv=None):
       f"{args.model} ({work.num_params / 1e9:.2f}B params) | {description}",
       flush=True,
   )
+  log.event(
+      "layout", structure=layout.structure, num_params=work.num_params,
+      tokens_per_step=work.tokens_per_step, flops_per_step=work.flops_per_step,
+      placement=layout.placement,
+  )
+  if args.run_dir and jax.process_index() == 0:
+    from jaxtitan.observability import env as env_lib  # pylint: disable=g-import-not-at-top
+
+    env_lib.write(os.path.join(args.run_dir, "env.json"), args=args, devices=devices,
+                  placement=layout.placement)
+  if args.eval_every and layout.eval_step is None:
+    raise ValueError(f"{layout.structure} has no validation step")
 
   ckpt = None
   start = 0
@@ -440,26 +560,27 @@ def main(argv=None):
           f"checkpoint holds {meta['model']} as {meta['structure']}, not "
           f"{args.model} as {layout.structure}"
       )
-    print(
-        f"restored step {start} from {args.checkpoint_dir} in {time.time() - t0:.1f}s",
-        flush=True,
-    )
+    state_s = time.time() - t0
+    print(f"restored step {start} from {args.checkpoint_dir} in {state_s:.1f}s", flush=True)
   else:
     params, opt_states = layout.init()
-    print(f"initialized params and optimizer state in {time.time() - t0:.1f}s", flush=True)
+    state_s = time.time() - t0
+    print(f"initialized params and optimizer state in {state_s:.1f}s", flush=True)
+  log.event("state", seconds=state_s, restored_step=start)
 
   t0 = time.time()
   ops.reset_selections()
   lowered = layout.step.lower(params, opt_states, layout.input_spec, layout.target_spec)
   t1 = time.time()
   compiled = lowered.compile()
-  print(
-      f"lowered in {t1 - t0:.1f}s, compiled in {time.time() - t1:.1f}s",
-      flush=True,
-  )
+  t2 = time.time()
+  print(f"lowered in {t1 - t0:.1f}s, compiled in {t2 - t1:.1f}s", flush=True)
+  log.event("compile", lower_s=t1 - t0, compile_s=t2 - t1)
   selected = [dataclasses.asdict(s) for s in ops.selections()]
   print("ops:\n  " + ops.summary().replace("\n", "\n  "), flush=True)
 
+  t0 = time.time()
+  eval_batches = []
   if work.next_batch is not None:
     next_batch = work.next_batch
     print("data: synthetic", flush=True)
@@ -482,6 +603,16 @@ def main(argv=None):
       assert sampler.step == step, (sampler.step, step)
       return sampler.next(num_mb * mb)
 
+  if args.eval_every:
+    if work.next_batch is not None or args.data == "synthetic":
+      eval_batches = [next_batch(_EVAL_STEPS + i) for i in range(args.eval_batches)]
+    else:
+      held_out = WindowSampler(args.eval_data, seq, seed=args.seed, step=0)
+      if held_out.max_token() >= work.vocab_size:
+        raise ValueError(f"{args.eval_data} has token ids beyond the vocabulary")
+      eval_batches = [held_out.next(num_mb * mb) for _ in range(args.eval_batches)]
+  log.event("data", seconds=time.time() - t0)
+
   def meta(step):
     return {
         "step": step, "model": args.model, "structure": layout.structure,
@@ -491,52 +622,116 @@ def main(argv=None):
   profile = [int(s) for s in args.profile_steps.split(":")] if args.profile_steps else None
   tokens_per_step, flops_per_step = work.tokens_per_step, work.flops_per_step
   peak_flops = len(devices) * args.peak_tflops_per_device * 1e12
-  log = open(args.log_file, "a") if args.log_file else None
+  watchdog = None
+  if args.step_timeout > 0:
+    from jaxtitan.observability import watchdog as wd  # pylint: disable=g-import-not-at-top
 
-  for step in range(start, args.steps):
-    if profile and step == profile[0]:
-      jax.block_until_ready((params, opt_states))
-      jax.profiler.start_trace(args.profile_dir)
-    tokens, targets = layout.put_batch(next_batch(step))
-    t0 = time.time()
-    with jax.profiler.StepTraceAnnotation("train_step", step_num=step):
-      params, opt_states, loss = compiled(params, opt_states, tokens, targets)
-      loss = float(loss)
-    dt = time.time() - t0
-    if profile and step == profile[1] - 1:
-      jax.block_until_ready((params, opt_states))
-      jax.profiler.stop_trace()
-      print(f"traced steps {profile[0]}-{step} into {args.profile_dir}", flush=True)
-    record = {
-        "step": step,
-        "loss": loss,
-        "step_time_s": dt,
-        "tokens_per_s": tokens_per_step / dt,
-        "mfu": flops_per_step / dt / peak_flops,
-    }
-    print(
-        f"step {step:4d} | loss {loss:8.4f} | {dt * 1e3:8.1f} ms | "
-        f"{record['tokens_per_s']:10.0f} tok/s | MFU {100 * record['mfu']:5.1f}%",
-        flush=True,
-    )
-    if log:
-      log.write(json.dumps(record) + "\n")
-      log.flush()
-    if step == start:
-      peaks = [
-          (d.memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30
-          for d in devices
-      ]
-      print("peak HBM per device (GiB): " + " ".join(f"{p:.1f}" for p in peaks), flush=True)
-    if not np.isfinite(loss):
-      raise FloatingPointError(f"non-finite loss at step {step}")
+    watchdog = wd.StepWatchdog(args.step_timeout)
+  power_sampler = None
+  if args.run_dir and args.power_sample_s > 0 and jax.process_index() == 0:
+    from jaxtitan.observability import power  # pylint: disable=g-import-not-at-top
+
+    power_sampler = power.Sampler(
+        os.path.join(args.run_dir, "power.jsonl"), args.power_sample_s).start()
+
+  compiled_eval = None
+  status, done = "completed", start
+  try:
+    for step in range(start, args.steps):
+      if profile and step == profile[0]:
+        jax.block_until_ready((params, opt_states))
+        jax.profiler.start_trace(args.profile_dir)
+      tokens, targets = layout.put_batch(next_batch(step))
+      t0 = time.time()
+      if watchdog:
+        watchdog.start(step)
+      with jax.profiler.StepTraceAnnotation("train_step", step_num=step):
+        params, opt_states, loss, grad_norm = compiled(params, opt_states, tokens, targets)
+        loss, grad_norm = float(loss), float(grad_norm)
+      if watchdog:
+        watchdog.stop()
+      dt = time.time() - t0
+      if profile and step == profile[1] - 1:
+        jax.block_until_ready((params, opt_states))
+        jax.profiler.stop_trace()
+        print(f"traced steps {profile[0]}-{step} into {args.profile_dir}", flush=True)
+        if args.run_dir:
+          from jaxtitan.observability import profile as profile_lib  # pylint: disable=g-import-not-at-top
+
+          profile_lib.write_json(args.profile_dir, profile[1] - profile[0],
+                                 os.path.join(args.run_dir, "profile.json"))
+      record = {
+          "step": step,
+          "loss": loss,
+          "grad_norm": grad_norm,
+          "step_time_s": dt,
+          "tokens_per_s": tokens_per_step / dt,
+          "tokens_per_s_per_gpu": tokens_per_step / dt / len(devices),
+          "mfu": flops_per_step / dt / peak_flops,
+          "time": time.time(),
+      }
+      print(
+          f"step {step:4d} | loss {loss:8.4f} | grad norm {grad_norm:8.3f} | {dt * 1e3:8.1f} ms | "
+          f"{record['tokens_per_s']:10.0f} tok/s | MFU {100 * record['mfu']:5.1f}%",
+          flush=True,
+      )
+      log.write(record)
+      if step == start:
+        peaks = [
+            (d.memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30
+            for d in devices
+        ]
+        print("peak HBM per device (GiB): " + " ".join(f"{p:.1f}" for p in peaks), flush=True)
+        log.event("memory", step=step, peak_hbm_gib=peaks)
+      if not np.isfinite(loss):
+        raise FloatingPointError(
+            f"non-finite loss or gradient norm ({grad_norm}) at step {step}; the step "
+            "made no update, and nothing was saved after it")
+      done = step + 1
+      if eval_batches and (done % args.eval_every == 0 or done == args.steps):
+        t0 = time.time()
+        placed = [layout.put_batch(b) for b in eval_batches]
+        compile_s = 0.0
+        if compiled_eval is None:
+          compiled_eval = layout.eval_step.lower(params, *placed[0]).compile()
+          compile_s = time.time() - t0
+        t1 = time.time()
+        eval_loss = float(np.mean([float(compiled_eval(params, x, t)) for x, t in placed]))
+        eval_s = time.time() - t1
+        print(f"step {done:4d} | validation loss {eval_loss:.4f} over {len(placed)} batches "
+              f"in {eval_s:.1f}s", flush=True)
+        log.event("eval", step=done, loss=eval_loss, seconds=time.time() - t0,
+                  compile_s=compile_s)
+      if ckpt:
+        t0 = time.time()
+        force = step + 1 == args.steps
+        if ckpt.save(step + 1, (params, opt_states), meta(step + 1), force=force):
+          blocking = time.time() - t0
+          print(f"saved step {step + 1} in {blocking:.1f}s", flush=True)
+          log.event("save", step=step + 1, blocking_s=blocking)
+      if done == args.fail_at_step:
+        print(f"--fail_at_step: exiting after step {step}", flush=True)
+        os._exit(75)
     if ckpt:
       t0 = time.time()
-      force = step + 1 == args.steps
-      if ckpt.save(step + 1, (params, opt_states), meta(step + 1), force=force):
-        print(f"saved step {step + 1} in {time.time() - t0:.1f}s", flush=True)
-  if ckpt:
-    ckpt.close()
+      ckpt.close()
+      log.event("checkpoint_closed", seconds=time.time() - t0)
+  except BaseException as e:
+    status = f"{type(e).__name__}: {e}"[:500]
+    raise
+  finally:
+    if power_sampler:
+      power_sampler.stop()
+    log.event("end", status=status, steps_done=done - start)
+    log.close()
+  if args.run_dir and jax.process_index() == 0:
+    from jaxtitan.observability import summarize  # pylint: disable=g-import-not-at-top
+
+    try:
+      summarize.write_results(args.run_dir, skip=min(5, (args.steps - start) // 2))
+      print(f"results: {os.path.join(args.run_dir, 'results.json')}", flush=True)
+    except (ValueError, KeyError, OSError) as e:
+      print(f"no results.json: {type(e).__name__}: {e}", flush=True)
   return 0
 
 

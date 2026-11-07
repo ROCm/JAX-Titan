@@ -164,9 +164,47 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 
 # MaxText's Llama 3.1 8B, built from MaxText's layers (the maxtext extra), on
 # the same data and pipeline. Gradients are reduced per microbatch.
+# --ops=attention=te or aiter routes MaxText's attention through jaxtitan.ops.
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
+
+# From pretrained weights: convert Hugging Face's Llama 3.1 8B once with
+# MaxText's converter (needs a Hugging Face token with access to the model, or
+# --hf_model_path to a local copy), then start from the converted parameters.
+HF_AUTH_TOKEN=$HF_TOKEN python -m maxtext.checkpoint_conversion.to_maxtext \
+  ${JAXTITAN_ROOT}/src/maxtext/src/maxtext/configs/base.yml model_name=llama3.1-8b \
+  base_output_directory=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf hardware=cpu \
+  skip_jax_distributed_system=True scan_layers=True --lazy_load_tensors=True
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --num_stages=2 --ops=attention=te \
+  --init_from=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf/0/items --steps=100
+
+# From pretrained weights: convert Hugging Face's Llama 3.1 8B once with
+# MaxText's converter (needs a Hugging Face token with access to the model, or
+# --hf_model_path to a local copy), then start from the converted parameters.
+HF_AUTH_TOKEN=$HF_TOKEN python -m maxtext.checkpoint_conversion.to_maxtext \
+  ${JAXTITAN_ROOT}/src/maxtext/src/maxtext/configs/base.yml model_name=llama3.1-8b \
+  base_output_directory=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf hardware=cpu \
+  skip_jax_distributed_system=True scan_layers=True --lazy_load_tensors=True
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --num_stages=2 --ops=attention=te \
+  --init_from=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf/0/items --steps=100
+
+# Its no-pipeline reference for Gate 0: the same stages, weights and batches as
+# one data-parallel jax.jit program; then compare the first 10 steps' losses.
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --parallel=dp \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=10 --run_dir=runs/mt_dp
+
+# Any run with --run_dir records the scaling book's training metrics (step
+# records and timeline, env.json, GPU power, validation with --eval_every) and
+# writes results.json; docs/metrics.md lists them and the tools that read them.
+XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+  --model=maxtext:llama3.1-8b --num_stages=2 \
+  --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=10 --run_dir=runs/mt_pp2
+python -m jaxtitan.observability.summarize --gate0 runs/mt_dp runs/mt_pp2 \
+  --gate0_steps 10 --gate0_rtol 2e-3
 
 # MaxDiffusion's FLUX.1-dev (12B) on synthetic 1024x1024 batches: noised
 # random latents and text embeddings, with the flow-matching loss. With 2
@@ -206,6 +244,10 @@ The tokenizer comes from a sibling MaxText checkout (override with
 `JAXTITAN_LLAMA3_TOKENIZER`).
 
 ## Results
+
+[recipes/maxtext-llama3.1-8b.md](recipes/maxtext-llama3.1-8b.md) runs
+MaxText's Llama 3.1 8B with TE attention for 1,000 steps and lists what to
+expect: step time, loss curve, startup and checkpoint costs, energy and ETTR.
 
 [pipelines.md](pipelines.md#results-2026-11-05-8x-mi355x) has the step time,
 memory and bubble of every schedule and layout on 8x MI355X. For Llama 3.1

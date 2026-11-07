@@ -322,10 +322,11 @@ def _mpmd(runner, case, provider, args, kwargs, devices):
   def run(p):
     def build():
       step = jt_mpmd.make_train_step([stage0, stage1], opt)
+      scalar = NamedSharding(meshes[1], P())
       compiled = mpmd.jit(step, config, in_shardings=(p_sh, s_sh, x_sh, t_sh),
-                          out_shardings=(p_sh, s_sh, NamedSharding(meshes[1], P()))
+                          out_shardings=(p_sh, s_sh, scalar, scalar)
                           ).lower(params, states, xs, ts).compile()
-      new, _, loss = compiled(jax.device_put(params, p_sh), jax.device_put(states, s_sh),
+      new, _, loss, _ = compiled(jax.device_put(params, p_sh), jax.device_put(states, s_sh),
                               jax.device_put(xs, x_sh), jax.device_put(ts, t_sh))
       grads = jax.tree.map(lambda a, b: np.asarray(a) - np.asarray(b), params, new)
       return float(loss), jax.tree.leaves(grads)

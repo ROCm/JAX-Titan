@@ -16,6 +16,7 @@ constrain activation shardings, so stages reduce gradients per microbatch.
 """
 
 from collections.abc import Callable, Sequence
+import contextlib
 import functools
 import os
 
@@ -28,9 +29,12 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from maxtext.common.common_types import AttentionType
 from maxtext.common.common_types import DecoderBlockType
 from maxtext.common.common_types import MODEL_MODE_TRAIN
 from maxtext.configs import pyconfig
+from maxtext.inference.kvcache import KVTensor
+from maxtext.layers import attention_op
 from maxtext.layers import nnx_scan
 from maxtext.models import models
 from maxtext.utils import maxtext_utils
@@ -144,9 +148,50 @@ def llama_params(cfg, stage_params: Sequence[dict]) -> tuple[dict, ...]:
   return tuple(out)
 
 
+def _pure_dict(tree):
+  """Nested dicts of arrays from a tree that may hold NNX States and Variables."""
+  if isinstance(tree, nnx.Variable):
+    return tree.get_value()
+  if hasattr(tree, "items"):
+    return {k: _pure_dict(v) for k, v in tree.items()}
+  return tree
+
+
 def _slice_layers(x, start: int, size: int, scan_axis: int):
   axis = scan_axis if x.ndim > scan_axis else 0
   return jax.lax.slice_in_dim(x, start, start + size, axis=axis)
+
+
+def _unset(value) -> bool:
+  return value is None or (isinstance(value, (bool, int)) and not value)
+
+
+@contextlib.contextmanager
+def _attention_through(attention: Callable):
+  """Routes MaxText's causal training attention to `attention(q, k, v, causal=, scale=)`.
+
+  Everything else (decoding, other masks, sinks, soft caps, quantized KV)
+  stays in MaxText's attention op. MaxText folds 1/sqrt(head_dim) into the
+  query projection, so the call has no scale; the stages' segment ids are all
+  ones, so the mask is plain causal.
+  """
+  original = attention_op.AttentionOp.apply_attention
+
+  def apply_attention(self, query, key, value, decoder_segment_ids, segment_positions, lengths,
+                      model_mode, *args, **kwargs):
+    extras = [v for k, v in kwargs.items() if k not in ("qk_product_einsum", "wv_product_einsum")]
+    if (model_mode != MODEL_MODE_TRAIN or not all(map(_unset, [*args, *extras]))
+        or self.attention_type != AttentionType.GLOBAL or self.attn_logits_soft_cap
+        or isinstance(key, KVTensor) or isinstance(value, KVTensor)):
+      return original(self, query, key, value, decoder_segment_ids, segment_positions, lengths,
+                      model_mode, *args, **kwargs)
+    return attention(query, key, value, causal=True, scale=1.0), None, None
+
+  attention_op.AttentionOp.apply_attention = apply_attention
+  try:
+    yield
+  finally:
+    attention_op.AttentionOp.apply_attention = original
 
 
 class Model:
@@ -155,11 +200,12 @@ class Model:
   `mesh` is any one stage mesh from `mesh()`: MaxText's layers place their
   sharding constraints on it, and an MPMD program needs every constraint on
   one mesh. `layers` gives the decoder layers per stage; the default splits
-  them evenly.
+  them evenly. With `attention`, such as `jaxtitan.ops.attention`, causal
+  training attention runs there instead of in MaxText's attention op.
   """
 
   def __init__(self, cfg, stage_mesh: jax.sharding.Mesh, *, num_stages: int,
-               layers: Sequence[int] | None = None):
+               layers: Sequence[int] | None = None, attention: Callable | None = None):
     if cfg.decoder_block not in _SCANNED_GENERIC or not cfg.scan_layers:
       raise NotImplementedError(
           f"decoder_block={cfg.decoder_block} with scan_layers={cfg.scan_layers}; "
@@ -179,6 +225,7 @@ class Model:
     self.mesh = stage_mesh
     self.layers = tuple(layers)
     self.num_stages = num_stages
+    self._attention = attention
 
     with nn.logical_axis_rules(cfg.logical_axis_rules):
       abstract = nnx.eval_shape(lambda: self._transformer(0))
@@ -226,6 +273,25 @@ class Model:
     """ShapeDtypeStructs of `init(seed)`, without initializing."""
     return jax.eval_shape(lambda: self.split(self._init_full(seed)[0]))
 
+  def load(self, path: str) -> tuple[dict, ...]:
+    """Stage parameters from a MaxText parameter checkpoint.
+
+    `path` is what MaxText's `load_parameters_path` takes: the output of its
+    `checkpoint_conversion/to_maxtext.py` (from Hugging Face weights) or of
+    `checkpointing.save_params_to_path`. MaxText's loader restores the weights
+    onto one device in the config's `weight_dtype`.
+    """
+    from maxtext.common import checkpointing  # pylint: disable=g-import-not-at-top
+
+    device = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
+    with nn.logical_axis_rules(self.cfg.logical_axis_rules):
+      _, abstract, _ = nnx.split(nnx.eval_shape(lambda: self._transformer(0)), nnx.Param, ...)
+    abstract = jax.tree.map(lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=device),
+                            abstract)
+    restored = checkpointing.load_params_from_path(
+        path, abstract, self.cfg.checkpoint_storage_concurrent_gb)
+    return self.split(_pure_dict(restored))
+
   def forward(self, stage: int, params: dict, x: jax.Array) -> jax.Array:
     """Token ids in for stage 0; logits out of the last stage."""
     cfg = self.cfg
@@ -239,15 +305,18 @@ class Model:
       positions = jnp.broadcast_to(jnp.arange(length, dtype=jnp.int32), (batch, length))
       segments = jnp.ones((batch, length), jnp.int32)
       layers = nnx.merge(self._layers_graph, params["layers"], self._layer_rest[stage])
-      y = nnx_scan.apply_scanned_layers(
-          layers, y,
-          length=self.layers[stage],
-          param_scan_axis=cfg.param_scan_axis,
-          apply_fn=lambda layer, h: layer(h, segments, positions, True, MODEL_MODE_TRAIN)[0],
-          remat=cfg.remat_policy != "none",
-          remat_policy=None,
-          prevent_cse=maxtext_utils.should_prevent_cse_in_remat(cfg),
-      )
+      routed = (_attention_through(self._attention) if self._attention
+                else contextlib.nullcontext())
+      with routed:
+        y = nnx_scan.apply_scanned_layers(
+            layers, y,
+            length=self.layers[stage],
+            param_scan_axis=cfg.param_scan_axis,
+            apply_fn=lambda layer, h: layer(h, segments, positions, True, MODEL_MODE_TRAIN)[0],
+            remat=cfg.remat_policy != "none",
+            remat_policy=None,
+            prevent_cse=maxtext_utils.should_prevent_cse_in_remat(cfg),
+        )
       if stage < self.num_stages - 1:
         return y
       y = nnx.merge(self._norm_graph, params["decoder_norm"])(y, out_sharding=None)

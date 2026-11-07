@@ -6,6 +6,7 @@ schedules can interleave forward and backward fragments across microbatches.
 """
 
 from collections.abc import Callable, Mapping, Sequence
+import functools
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +23,14 @@ TENSOR_AXIS = parallel.TENSOR_AXIS
 
 def stage_name(i: int) -> str:
   return f"stage{i}"
+
+
+def grad_norm_name(i: int) -> str:
+  return f"stage{i}_grad_norm"
+
+
+def update_name(i: int) -> str:
+  return f"stage{i}_update"
 
 
 def mesh_name(i: int) -> str:
@@ -84,10 +93,18 @@ def make_config(
     raise ValueError(f"{num_stages} stages do not split evenly over {n} meshes")
   if schedule:
     options = {"mpmd_merge_inferred_after_scheduling": True, **(options or {})}
+  # Each stage's gradient norm and update get stage ids of their own: Shardy
+  # merges a user fragment into its consumer unless their stage ids differ,
+  # and a gradient reduction merged into the update would wait for the other
+  # meshes' norms. Without call counters, they are not scheduling units.
+  stages = {stage_name(i): i for i in range(num_stages)}
+  stages.update({grad_norm_name(i): num_stages + 2 * i for i in range(num_stages)})
+  stages.update({update_name(i): num_stages + 2 * i + 1 for i in range(num_stages)})
   return mpmd.make_config(
       topology,
-      {stage_name(i): mesh_name(i % n) for i in range(num_stages)},
-      name_to_stage_assignment={stage_name(i): i for i in range(num_stages)},
+      {name(i): mesh_name(i % n) for i in range(num_stages)
+       for name in (stage_name, grad_norm_name, update_name)},
+      name_to_stage_assignment=stages,
       partitioning_options=dict(options) if options else None,
       read_input_output_mesh_from_shardings=True,
       pipeline_schedule=(
@@ -190,10 +207,52 @@ def _per_device_manual(fn: Callable[..., jax.Array], axes, mesh: jax.sharding.Me
   return per_device_fn
 
 
+def global_grad_norm(stage_grads: Sequence) -> jax.Array:
+  """The norm of all stages' gradients together, usable on every stage's mesh.
+
+  Each stage sums its squares on its own mesh; Shardy MPMD moves those scalars
+  to one mesh for the sum and the result back to every mesh. Under `jax.jit`
+  the MPMD annotations do nothing.
+  """
+  total = None
+  for grads in stage_grads:
+    squares = _sum_of_squares(grads)
+    total = squares if total is None else total + squares
+  return mpmd.broadcast(mpmd.reduce(jnp.sqrt(total)))
+
+
+def _sum_of_squares(grads) -> jax.Array:
+  return sum(jnp.sum(jnp.square(g.astype(jnp.float32))) for g in jax.tree.leaves(grads))
+
+
+def clipped_update(optimizer: optax.GradientTransformation, params, grads, state,
+                   norm: jax.Array, max_grad_norm: float | None = None):
+  """`optimizer`'s update of one stage, given the global gradient norm.
+
+  With `max_grad_norm`, `grads` are first scaled as
+  `optax.clip_by_global_norm(max_grad_norm)` scales them with `norm` as the
+  global norm. When `norm` is not finite, `params` and `state` come back
+  unchanged.
+  """
+  if max_grad_norm is not None:
+    clip = norm < max_grad_norm
+    grads = jax.tree.map(
+        lambda g: jax.lax.select(clip, g, (g / norm.astype(g.dtype)) * max_grad_norm), grads)
+  updates, new_state = optimizer.update(grads, state, params)
+  new_params = optax.apply_updates(params, updates)
+  finite = jnp.isfinite(norm)
+
+  def keep(new, old):
+    return jnp.where(finite, new, old)
+
+  return jax.tree.map(keep, new_params, params), jax.tree.map(keep, new_state, state)
+
+
 def make_train_step(
     stage_fns: Sequence[Callable[..., jax.Array]],
     optimizer: optax.GradientTransformation,
     *,
+    max_grad_norm: float | None = None,
     copy_axes: Sequence | None = None,
     param_specs: Sequence | None = None,
     mesh: jax.sharding.Mesh | None = None,
@@ -201,7 +260,10 @@ def make_train_step(
 ) -> Callable:
   """Returns `step(stage_params, opt_states, tokens, targets)`.
 
-  Every stage keeps its own optimizer state, so gradient clipping is per stage.
+  The step returns `(stage_params, opt_states, loss, grad_norm)`. Every stage
+  keeps its own optimizer state, but `grad_norm` is one norm over all stages'
+  gradients, and `max_grad_norm` clips by it, as for a single model. When the
+  norm is not finite, no stage updates and the loss comes back as NaN.
 
   By default a stage reduces its gradients across its data-parallel ranks in
   the backward pass of every microbatch. With `copy_axes`, one pytree of axes
@@ -251,28 +313,56 @@ def make_train_step(
         _device_copies(p, copy_axes[i], param_specs[i], mesh)
         for i, p in enumerate(stage_params)
     ]
-    loss, copy_grads = jax.value_and_grad(
+    return jax.value_and_grad(
         lambda c: pipeline_loss(device_fns, c, tokens, targets)
     )(copies)
 
+  def reduce_copies(i, copy_grads):
     def reduce(g, axis, s):
       return jax.lax.with_sharding_constraint(
           g.sum(axis), jax.sharding.NamedSharding(mesh, s)
       )
 
-    grads = [
-        jax.tree.map(reduce, g, copy_axes[i], param_specs[i])
-        for i, g in enumerate(copy_grads)
-    ]
-    return loss, grads
+    return jax.tree.map(reduce, copy_grads, copy_axes[i], param_specs[i])
+
+  def stage_grads(i, copy_grads):
+    """Stage `i`'s gradients, summed across its ranks, and their sum of squares."""
+    grads = reduce_copies(i, copy_grads)
+    return grads, _sum_of_squares(grads)
+
+  def update(params, grads, state, squares):
+    norm = jnp.sqrt(sum(squares))
+    params, state = clipped_update(optimizer, params, grads, state, norm, max_grad_norm)
+    return params, state, norm
 
   def train_step(stage_params, opt_states, tokens, targets):
     loss, grads = loss_and_grads(stage_params, tokens, targets)
     new_params, new_states = [], []
-    for params, grad, state in zip(stage_params, grads, opt_states):
-      updates, state = optimizer.update(grad, state, params)
-      new_params.append(optax.apply_updates(params, updates))
-      new_states.append(state)
-    return tuple(new_params), tuple(new_states), loss
+    if copy_axes is None:
+      # Gradients are already summed. Named fragments here gain little and
+      # make TE attention's custom partitioning fail to compile.
+      norm = global_grad_norm(grads)
+      for params, grad, state in zip(stage_params, grads, opt_states):
+        params, state = clipped_update(optimizer, params, grad, state, norm, max_grad_norm)
+        new_params.append(params)
+        new_states.append(state)
+    else:
+      # Named computations, not inferred ops: Shardy merges inferred ops into
+      # a neighboring fragment, and merging the global norm into a backward
+      # pass (or the gradient reduction into the update) makes that fragment
+      # wait for every other mesh. User fragments never merge with each other,
+      # so only the small update waits for the other stages' sums of squares.
+      squares, summed = [], []
+      for i, g in enumerate(grads):
+        g, sq = mpmd.named_computation(functools.partial(stage_grads, i),
+                                       name=grad_norm_name(i))(g)
+        summed.append(g)
+        squares.append(mpmd.broadcast(sq))
+      for i, (params, grad, state) in enumerate(zip(stage_params, summed, opt_states)):
+        params, state, norm = mpmd.named_computation(update, name=update_name(i))(
+            params, grad, state, squares)
+        new_params.append(params)
+        new_states.append(state)
+    return tuple(new_params), tuple(new_states), jnp.where(jnp.isfinite(norm), loss, jnp.nan), norm
 
   return train_step

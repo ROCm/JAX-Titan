@@ -31,18 +31,22 @@ debug session.
 4. Plan checkpoint space: a Llama 3.1 8B checkpoint is 80 GB and the trainer
    keeps the latest two. `/dev/shm` is host RAM, so do not leave checkpoints
    there.
-5. Wrap the run in `timeout -s KILL <seconds>`, write `--log_file` JSONL, and
-   send stdout and stderr to `${JAXTITAN_ROOT}/logs/<topic>/<run>.out`.
+5. Wrap the run in `timeout -s KILL <seconds>`, record it with `--run_dir`
+   (step records and timeline events, `env.json`, GPU power, `results.json`;
+   see `docs/metrics.md`), and send stdout and stderr to
+   `${JAXTITAN_ROOT}/logs/<topic>/<run>.out`.
 
 ## Launch
 
 ```bash
 # Pipeline: 2 stages x 4 GPUs, zero-bubble schedule (default).
+export JAXTITAN_LAUNCH_TIME=$(date +%s.%N)
 XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" timeout -s KILL 1800 python -m jaxtitan.trainer.train \
   --model=llama3.1-8b --num_stages=2 --microbatches=8 --microbatch_size=4 \
-  --seq_len=2048 --steps=30 --log_file=$LOG.jsonl > $LOG.out 2>&1
+  --seq_len=2048 --steps=30 --run_dir=$RUN > $RUN.out 2>&1
 
-# The same step without a pipeline: --parallel=dp or --parallel=fsdp.
+# The same step without a pipeline: --parallel=dp or --parallel=fsdp
+# (adapter models: --parallel=dp).
 
 # Models from MaxText and MaxDiffusion (FLUX.1 trains on synthetic batches).
 ... --model=maxtext:llama3.1-8b --num_stages=2 ...
@@ -65,8 +69,10 @@ blocks, and `--model_overrides` takes JSON config overrides.
 - Compiling a 2-stage pipeline step takes 66-116 s, since MPMD programs
   bypass the persistent cache; step 0 adds 20-25 s.
 - Read the `peak HBM per device` line after step 0.
-- Report medians over steps 5 to N. Exclude profiled steps
-  (`--profile_steps`): the first traced step carries profiler startup cost.
+- Report step time from `python -m jaxtitan.observability.summarize RUN`
+  (p50, p95 and max over steady steps; `--skip` drops warmup). Exclude
+  profiled steps (`--profile_steps`): the first traced step carries profiler
+  startup cost.
 - Red flags:
   - No step 0 within 3 minutes of `compiled in`: grep the log for
     `may be stuck` with `Initialize clique`. That RCCL hang happens when
@@ -78,13 +84,23 @@ blocks, and `--model_overrides` takes JSON config overrides.
     state reach 272 GiB per GPU.
   - `Input signature does not match the signature of the compiled function`
     at step 1: see `jaxtitan-debug`.
-  - A non-finite loss: the trainer raises `FloatingPointError`; stop and
+  - A non-finite loss or gradient norm: the step made no update, nothing is
+    saved after it, and the trainer raises `FloatingPointError`; stop and
     compare against the last good run.
+  - `step watchdog: ... exiting` and exit code 124: a step ran past
+    `--step_timeout` (or 10x the median); the log holds every thread's stack.
+    See `jaxtitan-debug`.
 
 ## Compare
 
 - Include the no-pipeline baseline (`--parallel=dp` and `--parallel=fsdp`),
-  measured on the same day and stack.
+  measured on the same day and stack. Check every new pipeline layout with
+  Gate 0 against it: `summarize --gate0 REFERENCE RUN --gate0_steps 10
+  --gate0_rtol 2e-3`.
+- For a published number, run three repeats and report the median and
+  spread (`summarize` prints both and a regression threshold), and MFU
+  against the calibrated ceiling too (`--ceilings`, from
+  `python -m jaxtitan.observability.ceilings`).
 - Change one thing at a time. To A/B a code change, run the old variant from
   a `git worktree` with `JAXTITAN_ROOT` exported.
 - `--steps` sets the cosine decay length, so compare loss curves only between

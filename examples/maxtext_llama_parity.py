@@ -48,6 +48,7 @@ def main(argv=None):
   from flax import linen as nn  # pylint: disable=g-import-not-at-top
   from flax import nnx  # pylint: disable=g-import-not-at-top
   from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
   from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
   from jaxtitan.models.adapters import maxtext as mt  # pylint: disable=g-import-not-at-top
   from maxtext.models import models  # pylint: disable=g-import-not-at-top
@@ -109,6 +110,23 @@ def main(argv=None):
   print(f"{num_stages} MaxText stages match MaxText's Transformer: "
         f"max |logits diff| {float(np.max(np.abs(np.asarray(logits) - np.asarray(ref_logits)))):.2e}")
 
+  # 1b. The same, with attention through jaxtitan.ops (native JAX).
+  routed = mt.Model(cfg, meshes[0], num_stages=num_stages, layers=stage_layers,
+                    attention=ops.attention)
+
+  def routed_chain(stage_params, x):
+    for i in range(num_stages):
+      x = routed.forward(i, stage_params[i], x)
+    return x
+
+  ops.reset_selections()
+  routed_logits = jax.jit(routed_chain)(split_params, tokens)
+  assert any(s.op == "attention" for s in ops.selections()), "attention was not routed"
+  np.testing.assert_allclose(np.asarray(routed_logits), np.asarray(ref_logits), rtol=1e-5,
+                             atol=1e-5)
+  print("with attention through jaxtitan.ops, they still match: max |logits diff| "
+        f"{float(np.max(np.abs(np.asarray(routed_logits) - np.asarray(ref_logits)))):.2e}")
+
   # 2. jaxtitan.models.llama gives the same stage outputs with the same weights.
   llama_cfg = mt.llama_config(cfg)
   llama_params = mt.llama_params(cfg, host_params)
@@ -137,7 +155,8 @@ def main(argv=None):
         f"{max(float(np.max(np.abs(np.asarray(a) - np.asarray(b)))) for a, b in zip(ours, theirs)):.2e}")
 
   # 3. The MPMD pipeline step matches single-mesh jax.jit.
-  optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(args.lr))
+  optimizer = optax.sgd(args.lr)
+  max_grad_norm = 1.0
   host_opt = tuple(jax.device_get(optimizer.init(p)) for p in host_params)
   batches = [
       rng.integers(0, cfg.vocab_size, (num_mb, mb, seq + 1), dtype=np.int32)
@@ -157,12 +176,13 @@ def main(argv=None):
       return total / num_mb
 
     loss, grads = jax.value_and_grad(loss_fn)(stage_params)
+    norm = jt_mpmd.global_grad_norm(grads)
     new_p, new_s = [], []
     for p, g, s in zip(stage_params, grads, opt_states):
-      u, s = optimizer.update(g, s, p)
-      new_p.append(optax.apply_updates(p, u))
+      p, s = jt_mpmd.clipped_update(optimizer, p, g, s, norm, max_grad_norm)
+      new_p.append(p)
       new_s.append(s)
-    return tuple(new_p), tuple(new_s), loss
+    return tuple(new_p), tuple(new_s), loss, norm
 
   param_sh = tuple(
       jax.tree.map(lambda _, m=meshes[i]: NamedSharding(m, P()), host_params[i])
@@ -174,11 +194,13 @@ def main(argv=None):
   )
   tok_sh = NamedSharding(meshes[0], P(None, "data", None))
   tgt_sh = NamedSharding(meshes[-1], P(None, "data", None))
-  train_step = jt_mpmd.make_train_step(stage_fns, optimizer, mesh=meshes[0])
+  train_step = jt_mpmd.make_train_step(
+      stage_fns, optimizer, max_grad_norm=max_grad_norm, mesh=meshes[0])
+  scalar = NamedSharding(meshes[-1], P())
   compiled = mpmd.jit(
       train_step, config,
       in_shardings=(param_sh, opt_sh, tok_sh, tgt_sh),
-      out_shardings=(param_sh, opt_sh, NamedSharding(meshes[-1], P())),
+      out_shardings=(param_sh, opt_sh, scalar, scalar),
   ).lower(host_params, host_opt, batches[0][..., :-1], batches[0][..., 1:]).compile()
   ref = jax.jit(reference_step)
 
@@ -186,12 +208,14 @@ def main(argv=None):
   ref_params, ref_opt = host_params, host_opt
   for step, batch in enumerate(batches):
     tok, tgt = batch[..., :-1], batch[..., 1:]
-    mpmd_params, mpmd_opt, mpmd_loss = compiled(
+    mpmd_params, mpmd_opt, mpmd_loss, mpmd_norm = compiled(
         mpmd_params, mpmd_opt, jax.device_put(tok, tok_sh), jax.device_put(tgt, tgt_sh)
     )
-    ref_params, ref_opt, ref_loss = ref(ref_params, ref_opt, tok, tgt)
-    print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}")
+    ref_params, ref_opt, ref_loss, ref_norm = ref(ref_params, ref_opt, tok, tgt)
+    print(f"step {step}: mpmd {float(mpmd_loss):.6f}  ref {float(ref_loss):.6f}  "
+          f"grad norm {float(mpmd_norm):.4f}  ref {float(ref_norm):.4f}")
     np.testing.assert_allclose(float(mpmd_loss), float(ref_loss), rtol=1e-5)
+    np.testing.assert_allclose(float(mpmd_norm), float(ref_norm), rtol=1e-5)
   for a, b in zip(jax.tree.leaves(jax.device_get(mpmd_params)),
                   jax.tree.leaves(jax.device_get(ref_params))):
     np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
