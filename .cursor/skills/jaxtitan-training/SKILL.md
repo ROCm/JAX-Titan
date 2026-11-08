@@ -38,7 +38,14 @@ debug session.
 6. To answer how long a training run takes on given GPUs, or whether it fits,
    use `python -m jaxtitan.planning.budget` (CPU only; `docs/planning.md`).
    Pass `--from_run` with a measured run directory rather than relying on the
-   assumed 40% MFU, and say which MFU the estimate used.
+   assumed 40% MFU, and say which MFU the estimate used. To predict a larger
+   GPU count, calibrate first: `python -m jaxtitan.planning.step --calibrate
+   RUN --ladder ...` sets each part of the step (compute, collectives, bubble,
+   runtime gaps) against the run's profile. When a part disagrees, report that
+   part, not a lower MFU.
+7. `scripts/bench_collectives.sh` measures RCCL (and MORI-EP when installed)
+   on every GPU of the node: check `scripts/gpus_free.sh` first, as for a
+   training run.
 
 ## Launch
 

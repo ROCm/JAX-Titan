@@ -140,13 +140,16 @@ def test_memory_floor_against_a_recorded_run():
   assert 1.8 < c["overhead"] < 2.2
 
 
-def test_data_parallel_communication():
-  c = comms.data_parallel_seconds(8e9, 16, 8, 504, 50)
-  assert c["domains"] == 2
-  assert c["inside_s"] == pytest.approx(2 * 7 / 8 * 32e9 / 504e9)
-  assert c["across_s"] == pytest.approx(2 * 32e9 / 8 / 2 / 50e9)
-  fsdp = comms.data_parallel_seconds(8e9, 8, 8, 504, None, fsdp=True)
-  assert fsdp["bytes_per_gpu"] == pytest.approx(8e9 * (2 + 2 + 4)) and fsdp["across_s"] == 0
+def test_data_parallel_communication(tmp_path):
+  out = tmp_path / "plan.json"
+  budget.main(["--model=llama3.1-8b", "--tokens=1e12", "--gpu=MI355X", "--gpus=16",
+               "--fsdp", f"--json={out}"])
+  c = json.loads(out.read_text())["data_parallel"]
+  assert (c["domains"], c["ranks_per_domain"]) == (2, 8)
+  params = models.from_name("llama3.1-8b").params()
+  assert [x["op"] for x in c["collectives"]] == ["all_gather", "all_gather", "reduce_scatter"]
+  assert c["bytes_per_gpu"] == pytest.approx(params * (2 + 2 + 4))
+  assert c["total_s"] == pytest.approx(sum(x["time_us"] for x in c["collectives"]) / 1e6)
   assert comms.ranks_per_domain(1024, 128, 8, 8) == 1
   assert comms.ranks_per_domain(8, 4, 1, 8) == 4
   assert comms.ranks_per_domain(4608, 576, 8, 72) == 9

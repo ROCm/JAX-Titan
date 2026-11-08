@@ -71,6 +71,17 @@ python -m jaxtitan.observability.flops --model=llama3.1-8b --num_stages=2 \
 # other GPU types and counts, from a run's measurements (docs/planning.md).
 python -m jaxtitan.planning.budget --model=llama3.1-8b --tokens=1e12 \
   --gpu=MI325X,MI355X --gpus=1024 --seq_len=2048 --from_run=runs/a
+
+# A run's step part by part against its prediction, a fit, and the fit at other GPU
+# counts; records go to a performance database that flags regressions.
+python -m jaxtitan.planning.step --calibrate runs/a --ladder 8,64,256,512 \
+  --ladder_batch_tokens 4194304 --perfdb perf.jsonl
+python -m jaxtitan.observability.perfdb perf.jsonl
+
+# Collective bus bandwidth by message size on this node (RCCL; MORI-EP when installed),
+# and a running job's time left.
+bash scripts/bench_collectives.sh
+python -m jaxtitan.planning.remaining runs/a --target_tokens 2e12
 ```
 
 The operator conformance bench (`jaxtitan.ops.conformance --modes=bench`) ends
@@ -236,8 +247,9 @@ These need more than one node, admin rights, or other chapters' deliverables:
 - Step time across nodes and RCCL communicator setup by node count (M5, Q1);
   today the first step's excess holds communicator setup.
 - Power caps below the default (P2), which need admin rights.
-- The step-time projection's residual table: `flops` gives each stage's FLOPs
-  and communication bytes, and the projection still needs measured kernel
-  times and a communication model (the book's `kernel_db` and
-  `comm_model.json`, Chapters 5 and 6).
+- Per-op kernel times for the step-time projection (the book's `kernel_db`,
+  Chapter 5). `planning.collectives` is the communication model (Chapter
+  6's `comm_model.json`), measured on one MI355X node. `planning.step` sets
+  predicted parts against a run's, but its compute is one efficiency for
+  every kernel.
 - Time to detect and to localize injected faults, and their accuracy (DBG1).

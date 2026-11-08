@@ -72,3 +72,7 @@ version = {attr = "jaxtitan.__version__"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["jaxtitan*"]
+
+[tool.setuptools.package-data]
+# Collective times measured with scripts/bench_collectives.sh (docs/planning.md).
+"jaxtitan.planning" = ["data/*.json"]

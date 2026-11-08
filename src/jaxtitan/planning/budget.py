@@ -39,6 +39,7 @@ import dataclasses
 import json
 import math
 
+from jaxtitan.planning import collectives
 from jaxtitan.planning import comms
 from jaxtitan.planning import gpus as gpus_lib
 from jaxtitan.planning import memory
@@ -254,17 +255,28 @@ def plan(model: models.Model, gpu: gpus_lib.GPU, args, run: dict | None = None) 
 
   if dp > 1 and gpu.scaleup_gbs:
     k = comms.ranks_per_domain(args.gpus, dp, args.tp, gpu.scaleup_gpus)
+    nodes = math.ceil(dp / k)
+    while dp % nodes:
+      nodes += 1
     scaleout = args.scaleout_gbs or gpu.scaleout_gbs
-    if k < dp and not scaleout:
+    if nodes > 1 and not scaleout:
       r["data_parallel"] = None
     else:
-      c = comms.data_parallel_seconds(mem["params_per_gpu"], dp, k, gpu.scaleup_gbs_for(k),
-                                      scaleout, grad_bytes=args.grad_reduce_bytes,
-                                      fsdp=args.fsdp, efficiency=args.comm_efficiency)
+      grads = mem["params_per_gpu"] * args.grad_reduce_bytes
+      # FSDP all-gathers the bf16 weights in the forward and the backward pass and
+      # reduce-scatters the gradient; otherwise the gradient is all-reduced.
+      calls = ([("all_gather", mem["params_per_gpu"] * 2)] * 2 + [("reduce_scatter", grads)]
+               if args.fsdp else [("all_reduce", grads)])
+      results = [collectives.predict(op, nbytes, dp, nodes, gpu=gpu, scaleout_gbs=scaleout,
+                                     efficiency=args.comm_efficiency) for op, nbytes in calls]
+      total_s = sum(c["time_us"] for c in results) / 1e6
       step_s = args.batch_tokens / r["tokens_per_s"]
-      c.update(step_compute_s=step_s, scaleout_gbs=scaleout,
-               hiding_batch_tokens=args.batch_tokens * c["total_s"] / step_s)
-      r["data_parallel"] = c
+      r["data_parallel"] = {
+          "ranks_per_domain": dp // nodes, "domains": nodes, "scaleout_gbs": scaleout,
+          "bytes_per_gpu": sum(b for _, b in calls), "total_s": total_s,
+          "collectives": [{"op": op, "bytes": b, **c} for (op, b), c in zip(calls, results)],
+          "step_compute_s": step_s,
+          "hiding_batch_tokens": args.batch_tokens * total_s / step_s}
   return r
 
 
@@ -315,15 +327,13 @@ def report(r: dict, args) -> None:
           f"{r['min_gpus_for_state']} GPUs (sharded over all of them, x{m['overhead']:.2f})")
   c = r.get("data_parallel")
   if c:
-    what = "FSDP gathers and reduce-scatter" if lo["fsdp"] else "gradient all-reduce"
+    parts = ", ".join(f"{x['op']} {x['bytes'] / 1e9:.1f} GB {x['algorithm']} at "
+                      f"{x['busbw_gbs']:.0f} GB/s bus ({x['source']})" for x in c["collectives"])
     print(f"data parallel over {c['domains']} scale-up domain(s) of {c['ranks_per_domain']} "
-          f"ranks: {what} of {c['bytes_per_gpu'] / 1e9:.1f} GB per GPU per step, "
-          f"{c['inside_s']:.3f} s inside + {c['across_s']:.3f} s across domains at "
-          f"{100 * c['efficiency']:.0f}% of peak links vs {c['step_compute_s']:.3f} s of "
-          f"compute per {_count(args.batch_tokens)}-token "
-          f"step: " + ("hidden if overlapped" if c["total_s"] <= c["step_compute_s"] else
-                       f"exposed; hiding it takes {_count(c['hiding_batch_tokens'])} tokens "
-                       "per step"))
+          f"ranks per step: {parts}; {c['total_s']:.3f} s against {c['step_compute_s']:.3f} s "
+          f"of compute per {_count(args.batch_tokens)}-token step: "
+          + ("hidden if overlapped" if c["total_s"] <= c["step_compute_s"] else
+             f"exposed; hiding it takes {_count(c['hiding_batch_tokens'])} tokens per step"))
 
 
 def comparison(results: list[dict]) -> None:
@@ -405,8 +415,9 @@ def main(argv=None):
   parser.add_argument("--scaleout_gbs", type=float, default=None,
                       help="Scale-out GB/s per GPU per direction; default: the GPU table's "
                       "(one 400 Gb/s NIC per GPU for MI300-series and MI350-series).")
-  parser.add_argument("--comm_efficiency", type=float, default=comms.EFFICIENCY,
-                      help="Fraction of the links' peak collectives reach.")
+  parser.add_argument("--comm_efficiency", type=float, default=collectives.EFFICIENCY,
+                      help="Fraction of the links' peak collectives reach where no "
+                      "measurement covers the group.")
   parser.add_argument("--state_bytes", default="4,4,8",
                       help="Bytes per parameter of weights, gradients and optimizer state: "
                       "4,4,8 is JAX-Titan's fp32 AdamW; Megatron's mixed precision is "
