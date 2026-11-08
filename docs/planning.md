@@ -1,25 +1,25 @@
 # Planning a training run
 
-`jaxtitan.planning.budget` estimates a training run before it starts: its
+`jax_titan.planning.budget` estimates a training run before it starts: its
 FLOPs, time, GPU-hours, energy and cost, whether its layout fits in memory,
 and whether its data-parallel communication hides behind compute. Give it a
 model, a token or time budget, and one GPU type or several to compare.
 
 ```bash
 # Tokens to train on GPUs of one type: the full report.
-python -m jaxtitan.planning.budget --model=llama3.1-8b --tokens=2e12 --gpu=MI325X --gpus=256
+python -m jax_titan.planning.budget --model=llama3.1-8b --tokens=2e12 --gpu=MI325X --gpus=256
 
 # The same run on several GPU types: one row each.
-python -m jaxtitan.planning.budget --model=maxtext:llama3.1-70b --tokens=15e12 \
+python -m jax_titan.planning.budget --model=maxtext:llama3.1-70b --tokens=15e12 \
   --gpu=MI300X,MI325X,MI350X,MI355X,MI455X --gpus=2048 --tp=8 --fsdp
 
 # A time budget instead (--days or --gpu_hours), or a dataset and epochs.
-python -m jaxtitan.planning.budget --model=hf:path/to/config.json --days=30 --gpu=MI355X --gpus=1024
-python -m jaxtitan.planning.budget --model=llama3.1-8b --dataset_tokens=1e12 --epochs=3 ...
+python -m jax_titan.planning.budget --model=hf:path/to/config.json --days=30 --gpu=MI355X --gpus=1024
+python -m jax_titan.planning.budget --model=llama3.1-8b --dataset_tokens=1e12 --epochs=3 ...
 
 # From what a JAX-Titan run measured: its achieved FLOP/s and power on the same GPU type
 # (its MFU carried over to other types), checkpoint and restart costs, and memory overhead.
-python -m jaxtitan.planning.budget --model=maxtext:llama3.1-8b --tokens=2e12 --gpu=MI355X \
+python -m jax_titan.planning.budget --model=maxtext:llama3.1-8b --tokens=2e12 --gpu=MI355X \
   --gpus=512 --seq_len=2048 --from_run=runs/maxtext-llama3.1-8b
 ```
 
@@ -130,7 +130,7 @@ model of RCCL (below).
   compute and, when they're exposed, gives the batch that would hide them.
 
 The planner doesn't model tensor, pipeline or expert-parallel communication,
-or the pipeline bubble. For pipelines, `jaxtitan.observability.flops` has
+or the pipeline bubble. For pipelines, `jax_titan.observability.flops` has
 them per stage.
 
 **Compute-optimal size.** For the same compute in Chinchilla's C = 6ND, at
@@ -180,19 +180,19 @@ difference doesn't carry over.
 
 ## Collectives: RCCL and MORI
 
-`jaxtitan.planning.collectives` gives one collective's time and bus
+`jax_titan.planning.collectives` gives one collective's time and bus
 bandwidth by message size, with the algorithm and protocol the library picks,
 for RCCL and for MORI-EP:
 
 ```bash
 # A sweep of message sizes for one group: measured where the shipped table covers it.
-python -m jaxtitan.planning.collectives --op=all_reduce --ranks=8 --gpu=MI355X
-python -m jaxtitan.planning.collectives --op=all_reduce --ranks=1024 --nodes=128
-python -m jaxtitan.planning.collectives --op=dispatch --ranks=16 --nodes=2 --tokens=4096
+python -m jax_titan.planning.collectives --op=all_reduce --ranks=8 --gpu=MI355X
+python -m jax_titan.planning.collectives --op=all_reduce --ranks=1024 --nodes=128
+python -m jax_titan.planning.collectives --op=dispatch --ranks=16 --nodes=2 --tokens=4096
 
 # Measure this node (GPUs free), then turn the outputs into a table.
-bash scripts/bench_collectives.sh ${JAXTITAN_ROOT}/logs/collectives/today
-python -m jaxtitan.planning.collectives --calibrate ${JAXTITAN_ROOT}/logs/collectives/today \
+bash scripts/bench_collectives.sh ${JAX_TITAN_ROOT}/logs/collectives/today
+python -m jax_titan.planning.collectives --calibrate ${JAX_TITAN_ROOT}/logs/collectives/today \
   --json table.json
 ```
 
@@ -274,7 +274,7 @@ Those are for the MORI-EP milestone.
 
 ## Step time, calibration and the scale ladder
 
-`jaxtitan.planning.step` predicts one optimizer step on the busiest GPU as
+`jax_titan.planning.step` predicts one optimizer step on the busiest GPU as
 compute + bubble + the exposed part of each collective + runtime gaps:
 
 - **Compute:** the stage's executed FLOPs over the GEMM rate XLA reaches,
@@ -295,8 +295,8 @@ compute + bubble + the exposed part of each collective + runtime gaps:
 - **Runtime gaps:** measured idle time beyond the bubble.
 
 ```bash
-python -m jaxtitan.planning.step --model=llama3.1-8b --gpus=8 --pp=2 --seq_len=2048
-python -m jaxtitan.planning.step --calibrate runs/a --ladder 8,64,256,512 \
+python -m jax_titan.planning.step --model=llama3.1-8b --gpus=8 --pp=2 --seq_len=2048
+python -m jax_titan.planning.step --calibrate runs/a --ladder 8,64,256,512 \
   --ladder_batch_tokens 4194304 --perfdb perf.jsonl
 ```
 
@@ -340,8 +340,8 @@ rank would get less than one sequence per microbatch, so the ladder stops.
 ## During a run: time left and the performance database
 
 ```bash
-python -m jaxtitan.planning.remaining runs/a --target_tokens 20e12
-python -m jaxtitan.observability.perfdb perf.jsonl
+python -m jax_titan.planning.remaining runs/a --target_tokens 20e12
+python -m jax_titan.observability.perfdb perf.jsonl
 ```
 
 `remaining` divides the tokens left by the recent throughput (the last 200
@@ -385,7 +385,7 @@ against these numbers:
   (35,840 chips) at 40% MFU take 11 days.
 - **Memory:** the floor and factor of the recorded JAX-Titan run above.
 - **The trainer's FLOPs:** the same FLOPs and rematerialization FLOPs per
-  token as the trainer and `jaxtitan.observability.flops` for Llama 3.1 8B.
+  token as the trainer and `jax_titan.observability.flops` for Llama 3.1 8B.
 - **RCCL:** the shipped MI355X measurements (380 GB/s all-reduce bus
   bandwidth on 8 GPUs) and the model within 10% of them at 256 MiB; the
   rccl-tests parser.
@@ -434,7 +434,7 @@ skill is an inference simulator. It counts per-op forward FLOPs for a
 serving shape, with no backward pass, optimizer, memory, communication or
 time to train. Its repository has no license, so none of its code or data
 is used here, only cross-checked. Its forward FLOPs agree with
-`jaxtitan.observability.flops` for matmuls, causal attention (2 x heads x
+`jax_titan.observability.flops` for matmuls, causal attention (2 x heads x
 head dimension x sequence per token and layer), the router and the routed
 experts. It differs in two ways: it also counts elementwise ops, and by
 default it computes the logits of the last token only, as in inference.

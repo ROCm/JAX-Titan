@@ -1,4 +1,4 @@
-"""MaxText Llama stages match MaxText, `jaxtitan.models.llama` and `jax.jit`."""
+"""MaxText Llama stages match MaxText, `jax_titan.models.llama` and `jax.jit`."""
 
 import importlib.util
 import pathlib
@@ -27,6 +27,6 @@ def test_maxtext_llama_parity(flags):
   )
   assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
   assert "match MaxText's Transformer" in result.stdout
-  assert "with attention through jaxtitan.ops, they still match" in result.stdout
-  assert "jaxtitan.models.llama matches the MaxText stages" in result.stdout
+  assert "with attention through jax_titan.ops, they still match" in result.stdout
+  assert "jax_titan.models.llama matches the MaxText stages" in result.stdout
   assert "matches the single-mesh reference" in result.stdout

@@ -50,7 +50,7 @@ Each stage mesh has a `data` and a `tensor` axis.
   FSDP (ZeRO-3).
 - **`--tensor_parallel=N`**: Megatron-style tensor parallelism over the
   stage's `N` consecutive devices. Attention heads, MLP columns and the
-  output vocabulary are sharded; `jaxtitan.parallel` derives the shardings
+  output vocabulary are sharded; `jax_titan.parallel` derives the shardings
   from the logical axes `models/llama.py` gives each parameter.
 - **`--stage_layers=17,15`**: decoder layers per stage. The last stage also
   runs the output head and loss, so giving it fewer layers balances the
@@ -157,7 +157,7 @@ step instead of in every microbatch made the step 1.3x faster (2.20 s to
 
 `--model=maxtext:llama3.1-8b` builds the stages from MaxText 0.2.5's own
 layers, and `--model=maxdiffusion:flux-dev` from MaxDiffusion's FLUX.1
-transformer (`jaxtitan.trainer.adapters`). Attention is their native JAX
+transformer (`jax_titan.trainer.adapters`). Attention is their native JAX
 implementation. Both reduce gradients in every microbatch's backward pass:
 MaxText's layers constrain activation shardings, and FLUX.1's stages pass
 tuples of activations, so neither has the per-rank parameter copies of
@@ -203,7 +203,7 @@ Since 2026-11-07 every pipeline clips by one gradient norm over all stages
 (the global norm of `optax.clip_by_global_norm`, which per-stage clipping
 only approximated) and skips the update when the norm is not finite; every
 result above used per-stage clipping. MaxText's attention can run through
-`jaxtitan.ops` (`--ops=attention=te` or `aiter`), and `--parallel=dp` runs
+`jax_titan.ops` (`--ops=attention=te` or `aiter`), and `--parallel=dp` runs
 an adapter model's stages without the pipeline, as the Gate 0 reference.
 Medians over steps 5-29 (from step 3 in the shorter checks; MaxText's
 attention is the median of three runs), Llama 3.1 8B with 65,536 tokens per
@@ -276,7 +276,7 @@ JAX-AITER (the `third_party/jax-aiter` submodule, built by
 `scripts/build_jax_aiter.sh`), or through JAX-Triton 0.5.0 and Triton 3.9.0
 to AITER's Triton kernels (`triton`) and the inter-wave Gluon BF16 GEMM of
 gfx950-gluon-tutorials (`gluon`); everything else stays native JAX. Before
-any training run, `python -m jaxtitan.ops.conformance` checked every op
+any training run, `python -m jax_titan.ops.conformance` checked every op
 against native JAX in bf16 and float32 on Llama 3.1 8B and FLUX.1 shapes; its
 rows are in [results/2026-11-06](results/2026-11-06) and
 [results/2026-11-07](results/2026-11-07) (`ops-conformance_*.jsonl`).

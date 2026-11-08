@@ -395,11 +395,11 @@ EOF
 cat > "$JT_SPUR/probe.sh" <<'EOF'
 #!/usr/bin/env bash
 # Runs probe_allreduce.py over TCP on the given interface; logs to
-# $JAXTITAN_ROOT/logs/probe_PROCESS_ID.out.
+# $JAX_TITAN_ROOT/logs/probe_PROCESS_ID.out.
 #   probe.sh PROCESS_ID NUM_PROCESSES COORDINATOR_HOST:PORT INTERFACE
 set -euo pipefail
 source scripts/env.sh
-exec > "$JAXTITAN_ROOT/logs/probe_$1.out" 2>&1
+exec > "$JAX_TITAN_ROOT/logs/probe_$1.out" 2>&1
 export NCCL_SOCKET_IFNAME=$4 NCCL_IB_DISABLE=1 NCCL_DEBUG=INFO
 env | grep '^NCCL_' || true
 python "$(dirname "$(readlink -f "$0")")/probe_allreduce.py" "$1" "$2" "$3"

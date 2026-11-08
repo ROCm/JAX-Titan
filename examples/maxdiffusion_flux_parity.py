@@ -46,8 +46,8 @@ def main(argv=None):
     jax.config.update("jax_num_cpu_devices", 8)
 
   from flax import linen as nn  # pylint: disable=g-import-not-at-top
-  from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
-  from jaxtitan.models.adapters import maxdiffusion as md  # pylint: disable=g-import-not-at-top
+  from jax_titan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jax_titan.models.adapters import maxdiffusion as md  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
   P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name

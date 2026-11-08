@@ -7,7 +7,7 @@ import sys
 
 import numpy as np
 
-from jaxtitan.observability import records
+from jax_titan.observability import records
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 FLAGS = [
@@ -19,7 +19,7 @@ FLAGS = [
 
 def _train(ckpt_dir, log, *flags):
   result = subprocess.run(
-      [sys.executable, "-m", "jaxtitan.trainer.train", *FLAGS,
+      [sys.executable, "-m", "jax_titan.trainer.train", *FLAGS,
        f"--checkpoint_dir={ckpt_dir}", f"--log_file={log}", *flags],
       capture_output=True, text=True, check=False, cwd=REPO,
   )

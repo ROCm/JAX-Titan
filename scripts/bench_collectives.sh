@@ -1,23 +1,23 @@
 #!/bin/bash
 # Collective time and bus bandwidth by message size, for RCCL and MORI, into
-# OUT_DIR (default $JAXTITAN_ROOT/logs/collectives/<date>):
+# OUT_DIR (default $JAX_TITAN_ROOT/logs/collectives/<date>):
 #
 #   bash scripts/bench_collectives.sh [OUT_DIR]
 #
 # Run inside the JAX-Titan container with the GPUs free (scripts/gpus_free.sh on
 # the host). It builds rccl-tests against TheRock's RCCL into
-# $JAXTITAN_ROOT/build/rccl-tests, from $JAXTITAN_ROOT/src/rccl-tests (a copy of
+# $JAX_TITAN_ROOT/build/rccl-tests, from $JAX_TITAN_ROOT/src/rccl-tests (a copy of
 # rocm-systems' projects/rccl-tests; RCCL_TESTS_SRC overrides). It then sweeps
 # all_reduce, all_gather, reduce_scatter, alltoall and sendrecv from MIN_BYTES to
 # MAX_BYTES on each of GPU_COUNTS GPUs of this node, with the algorithm,
 # protocol and channel count RCCL picks at each size (-A 1), and the all-reduce
 # again with each of ALGOS forced. MORI-EP's dispatch and combine benchmark
 # runs too when MORI is installed (MORI_EP_BENCH, MORI_PERF_OUT).
-# python -m jaxtitan.planning.collectives --calibrate OUT_DIR turns the outputs
+# python -m jax_titan.planning.collectives --calibrate OUT_DIR turns the outputs
 # into the table the planner reads.
 set -euo pipefail
 
-ROOT=${JAXTITAN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/.jaxtitan}
+ROOT=${JAX_TITAN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/.jax_titan}
 OUT=${1:-$ROOT/logs/collectives/$(date +%Y-%m-%d)}
 SRC=${RCCL_TESTS_SRC:-$ROOT/src/rccl-tests}
 BUILD=$ROOT/build/rccl-tests
@@ -41,7 +41,7 @@ if [ ! -x "$BUILD/all_reduce_perf" ]; then
 fi
 
 mkdir -p "$OUT"
-python -m jaxtitan.observability.env "$OUT/env.json" || true
+python -m jax_titan.observability.env "$OUT/env.json" || true
 gpus=$(python -c 'import glob; print(sum(open(p).read().strip() != "0" for p in glob.glob("/sys/class/kfd/kfd/topology/nodes/*/gpu_id")))')
 
 run() {  # name, GPUs, binary, env...

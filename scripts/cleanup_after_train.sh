@@ -6,7 +6,7 @@
 #   3. removes stale RCCL shared-memory segments (/dev/shm/nccl-*) of this user,
 #   4. removes the Orbax checkpoint directories named with --checkpoint,
 #   5. removes this user's GPU core dumps (gpucore.*) in the repository and
-#      ${JAXTITAN_ROOT}.
+#      ${JAX_TITAN_ROOT}.
 # Prints the plan and changes nothing unless --yes is given. Works on the host
 # and inside the container, since the container user has the host uid.
 #
@@ -16,12 +16,12 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-JAXTITAN_ROOT=${JAXTITAN_ROOT:-$(dirname "${REPO}")/.jaxtitan}
+JAX_TITAN_ROOT=${JAX_TITAN_ROOT:-$(dirname "${REPO}")/.jax_titan}
 GRACE=${GRACE:-30}
 # Processes started by JAX-Titan entry points.
-PATTERN=${PATTERN:-'jaxtitan\.(trainer\.train|observability)|examples/[a-z_]+\.py|tests/|pytest'}
+PATTERN=${PATTERN:-'jax_titan\.(trainer\.train|observability)|examples/[a-z_]+\.py|tests/|pytest'}
 # Checkpoints are only removed below these directories.
-ALLOWED_ROOTS=("/dev/shm" "/tmp" "${JAXTITAN_ROOT}")
+ALLOWED_ROOTS=("/dev/shm" "/tmp" "${JAX_TITAN_ROOT}")
 
 yes=0
 checkpoints=()
@@ -129,7 +129,7 @@ done
 echo "== 5. GPU core dumps of ${USER}"
 # A GPU memory fault writes all GPU memory to gpucore.<pid>.gpu in the
 # process's working directory: 502 GB on 8x MI355X.
-mapfile -t dumps < <(find "${REPO}" "${JAXTITAN_ROOT}" -maxdepth 3 -user "${USER}" \
+mapfile -t dumps < <(find "${REPO}" "${JAX_TITAN_ROOT}" -maxdepth 3 -user "${USER}" \
   -name 'gpucore.*' -type f 2>/dev/null)
 if (( ${#dumps[@]} )); then
   printf '  %s\n' "${dumps[@]}"

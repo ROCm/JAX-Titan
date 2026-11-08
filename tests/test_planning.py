@@ -7,13 +7,13 @@ import pathlib
 
 import pytest
 
-from jaxtitan.models import llama
-from jaxtitan.observability import flops as flops_lib
-from jaxtitan.planning import budget
-from jaxtitan.planning import comms
-from jaxtitan.planning import gpus
-from jaxtitan.planning import memory
-from jaxtitan.planning import models
+from jax_titan.models import llama
+from jax_titan.observability import flops as flops_lib
+from jax_titan.planning import budget
+from jax_titan.planning import comms
+from jax_titan.planning import gpus
+from jax_titan.planning import memory
+from jax_titan.planning import models
 
 RESULTS = pathlib.Path(__file__).parent.parent / "docs" / "results" / "2026-11-07"
 

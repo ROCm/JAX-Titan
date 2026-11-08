@@ -5,12 +5,12 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-JAXTITAN_ROOT=${JAXTITAN_ROOT:-$(dirname "${REPO}")/.jaxtitan}
-JAX_SRC=${JAX_SRC:-${JAXTITAN_ROOT}/src/jax}
-XLA_SRC=${XLA_SRC:-${JAXTITAN_ROOT}/src/xla}
+JAX_TITAN_ROOT=${JAX_TITAN_ROOT:-$(dirname "${REPO}")/.jax_titan}
+JAX_SRC=${JAX_SRC:-${JAX_TITAN_ROOT}/src/jax}
+XLA_SRC=${XLA_SRC:-${JAX_TITAN_ROOT}/src/xla}
 # Must be the Shardy commit pinned by XLA, with the Shardy patches applied.
-SHARDY_SRC=${SHARDY_SRC:-${JAXTITAN_ROOT}/src/shardy}
-BAZEL_ROOT=${BAZEL_ROOT:-${JAXTITAN_ROOT}/bazel}
+SHARDY_SRC=${SHARDY_SRC:-${JAX_TITAN_ROOT}/src/shardy}
+BAZEL_ROOT=${BAZEL_ROOT:-${JAX_TITAN_ROOT}/bazel}
 AMDGPU_TARGETS=${AMDGPU_TARGETS:-gfx950}
 WHEELS=${WHEELS:-jax,jaxlib,jax-rocm-plugin,jax-rocm-pjrt}
 # Leave headroom on shared machines.

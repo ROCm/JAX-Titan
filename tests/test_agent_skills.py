@@ -21,7 +21,7 @@ def test_copies_are_identical():
 def test_frontmatter():
   for skill in CLAUDE.glob("*/SKILL.md"):
     text = skill.read_text()
-    m = re.match(r"---\nname: ([a-z0-9-]{1,64})\ndescription: >-\n((?:  .*\n)+)---\n", text)
+    m = re.match(r"---\nname: ([a-z0-9_-]{1,64})\ndescription: >-\n((?:  .*\n)+)---\n", text)
     assert m, skill
     assert m.group(1) == skill.parent.name
     assert len(" ".join(m.group(2).split())) <= 1024

@@ -10,10 +10,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jaxtitan import ops
-from jaxtitan.ops import conformance
-from jaxtitan.ops import registry
-from jaxtitan.ops.partitioned import partitioned
+from jax_titan import ops
+from jax_titan.ops import conformance
+from jax_titan.ops import registry
+from jax_titan.ops.partitioned import partitioned
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -155,7 +155,7 @@ def test_conformance_native_on_cpu():
 def test_trainer_records_ops(tmp_path):
   log = tmp_path / "log.jsonl"
   result = subprocess.run(
-      [sys.executable, "-m", "jaxtitan.trainer.train", "--platform=cpu", "--model=llama3-test",
+      [sys.executable, "-m", "jax_titan.trainer.train", "--platform=cpu", "--model=llama3-test",
        "--data=synthetic", "--seq_len=64", "--microbatches=2", "--microbatch_size=4",
        "--steps=2", "--warmup_steps=1", "--ops=attention=te:native,stage1.rms_norm=native",
        f"--checkpoint_dir={tmp_path / 'ckpt'}", f"--log_file={log}"],

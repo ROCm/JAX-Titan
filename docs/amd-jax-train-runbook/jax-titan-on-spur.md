@@ -24,13 +24,13 @@ the measured results; this runbook does not repeat them.
 
 The container mounts the directory that holds the JAX-Titan checkout, so keep
 the checkout, a MaxText checkout (for the Llama 3 tokenizer) and
-`JAXTITAN_ROOT` side by side on the shared home. Only the Bazel output root
+`JAX_TITAN_ROOT` side by side on the shared home. Only the Bazel output root
 and throwaway checkpoints go to node-local scratch.
 
 | What | Where | Why |
 |---|---|---|
 | JAX-Titan and MaxText checkouts | Shared home, side by side | Visible on the login node and on every node |
-| `JAXTITAN_ROOT` (`.jaxtitan` next to the checkout): source trees, wheels, venv, data, compilation cache, logs, profiles, checkpoints you keep | Shared home | Built once and reused on any node; logs readable from the login node |
+| `JAX_TITAN_ROOT` (`.jax_titan` next to the checkout): source trees, wheels, venv, data, compilation cache, logs, profiles, checkpoints you keep | Shared home | Built once and reused on any node; logs readable from the login node |
 | Bazel output root | Node-local scratch | Large, and only needed while building |
 | Throwaway checkpoints | Node-local scratch or `/dev/shm` | Fast, but gone with the node |
 
@@ -51,18 +51,18 @@ PART=<v2 partition>
 NODE=<v2 compute node to request>
 SCRATCH=<node-local scratch path>
 
-JT_REPO=$HOME/jaxtitan/jax-titian          # the JAX-Titan checkout
-JT_ROOT=$(dirname "$JT_REPO")/.jaxtitan    # JAX-Titan's default JAXTITAN_ROOT
+JT_REPO=$HOME/jax_titan/jax-titan          # the JAX-Titan checkout
+JT_ROOT=$(dirname "$JT_REPO")/.jax_titan    # JAX-Titan's default JAX_TITAN_ROOT
 JT_SPUR=$JT_ROOT/spur                      # settings and scripts for SPUR
-JT_SCRATCH=$SCRATCH/$USER/jaxtitan         # node-local
+JT_SCRATCH=$SCRATCH/$USER/jax_titan         # node-local
 ```
 
 Clone JAX-Titan and MaxText side by side. The tokenizer is read from the
-MaxText checkout next to JAX-Titan (override with `JAXTITAN_LLAMA3_TOKENIZER`).
+MaxText checkout next to JAX-Titan (override with `JAX_TITAN_LLAMA3_TOKENIZER`).
 
 ```bash
 mkdir -p "$(dirname "$JT_REPO")" && cd "$(dirname "$JT_REPO")"
-git clone <JAX-Titan repository URL> jax-titian
+git clone <JAX-Titan repository URL> jax-titan
 git clone https://github.com/AI-Hypercomputer/maxtext.git maxtext
 ```
 
@@ -86,7 +86,7 @@ export JT_ROOT='$JT_ROOT'
 export JT_SPUR='$JT_SPUR'
 export JT_SCRATCH='$JT_SCRATCH'
 export JT_USER='$USER' JT_UID='$(id -u)' JT_GID='$(id -g)' JT_GROUP='$(id -gn)'
-export JT_CONTAINER='${USER}_therock-10.1_jaxtitan'
+export JT_CONTAINER='${USER}_therock-10.1_jax_titan'
 export JT_IMAGE='ghcr.io/rocm/jax-base-ubu24.therock-10.1:latest'
 export DOCKER_CONFIG=/tmp/.docker
 EOF
@@ -200,14 +200,14 @@ cat > "$JT_SPUR/venv.sh" <<'EOF'
 # pytest, which pyproject.toml lists.
 set -euo pipefail
 source "$(dirname "$(readlink -f "$0")")/spur.env"
-JAXTITAN_ROOT=$JT_ROOT
-python3 -m venv --system-site-packages ${JAXTITAN_ROOT}/venv
-source ${JAXTITAN_ROOT}/venv/bin/activate
-D=${JAXTITAN_ROOT}/src/jax/dist
+JAX_TITAN_ROOT=$JT_ROOT
+python3 -m venv --system-site-packages ${JAX_TITAN_ROOT}/venv
+source ${JAX_TITAN_ROOT}/venv/bin/activate
+D=${JAX_TITAN_ROOT}/src/jax/dist
 pip install $D/jax-*.whl $D/jaxlib-*.whl
 pip install --no-deps $D/jax_rocm10_plugin-*.whl $D/jax_rocm10_pjrt-*.whl
 pip install optax tiktoken pyarrow jaxtyping absl-py immutabledict typing_extensions chex
-pip install --no-deps -e ${JAXTITAN_ROOT}/src/shardy/shardy/integrations/python/jax/mpmd
+pip install --no-deps -e ${JAX_TITAN_ROOT}/src/shardy/shardy/integrations/python/jax/mpmd
 pip install orbax-checkpoint pytest
 EOF
 
@@ -222,7 +222,7 @@ EOF
 cat > "$JT_SPUR/train.sh" <<'EOF'
 #!/usr/bin/env bash
 # Runs the trainer with XLA's ROCm flags, as in getting_started.md. Appends its
-# output to $JAXTITAN_ROOT/logs/NAME.out and per-step metrics to NAME.jsonl;
+# output to $JAX_TITAN_ROOT/logs/NAME.out and per-step metrics to NAME.jsonl;
 # NAME may include a directory, such as spur/zb_pp2. With TRAIN_TIMEOUT set
 # (for example 30m), a run that takes longer is killed.
 #   train.sh NAME [TRAINER FLAGS...]
@@ -230,13 +230,13 @@ set -euo pipefail
 source scripts/env.sh
 name=$1
 shift
-log=$JAXTITAN_ROOT/logs/$name
+log=$JAX_TITAN_ROOT/logs/$name
 mkdir -p "$(dirname "$log")"
 exec >> "$log.out" 2>&1
 trap 'echo "$(date -Is) exit=$?"' EXIT
 echo "$(date -Is) $(hostname) train.sh $name $*"
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" ${TRAIN_TIMEOUT:+timeout -s KILL "$TRAIN_TIMEOUT"} \
-  python -m jaxtitan.trainer.train --log_file="$log.jsonl" "$@"
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" ${TRAIN_TIMEOUT:+timeout -s KILL "$TRAIN_TIMEOUT"} \
+  python -m jax_titan.trainer.train --log_file="$log.jsonl" "$@"
 EOF
 ```
 
@@ -253,7 +253,7 @@ building, testing and several runs (hold mode, tested on v2):
 ```bash
 cd /tmp
 sbatch --controller "$SPUR" --parsable \
-  -J "$USER-hold-jaxtitan" -p "$PART" \
+  -J "$USER-hold-jax_titan" -p "$PART" \
   -N1 -w "$NODE" --gpus-per-node=8 --exclusive \
   -t 1-00:00:00 --wrap "sleep 86400"
 squeue --controller "$SPUR" -u "$USER"         # wait for ST=R
@@ -263,7 +263,7 @@ Then, in every new login shell:
 
 ```bash
 JOBID=<JobID>
-JT_SPUR=$HOME/jaxtitan/.jaxtitan/spur          # as in section 2
+JT_SPUR=$HOME/jax_titan/.jax_titan/spur          # as in section 2
 source "$JT_SPUR/spur.env"
 spur show job --controller "$SPUR" "$JOBID" | head -20    # RUNNING, TresPerNode=gpu:8/node
 ```
@@ -388,7 +388,7 @@ in the container sources `scripts/env.sh` first (run.sh and train.sh do).
 ## 8. Prepare the data
 
 ```bash
-in_jt bash $JT_SPUR/run.sh python -m jaxtitan.data.text
+in_jt bash $JT_SPUR/run.sh python -m jax_titan.data.text
 ```
 
 This runs on the CPU. It downloads WikiText-103 from Hugging Face into
@@ -431,7 +431,7 @@ getting_started.md trains Llama 3.1 8B with 2 stages of 4 MI355X and the
 zero-bubble schedule (`ZERO_BUBBLE_H1`, the trainer's default) like this:
 
 ```bash
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 ```
@@ -482,7 +482,7 @@ development node, with the measured values replaced):
 jax <version> | 8 x AMD Instinct MI355X | llama3.1-8b (8.03B params) | 2 stages | schedule=ZERO_BUBBLE_H1 | gradients reduced per step
 initialized params and optimizer state in <s>s
 lowered in <s>s, compiled in <s>s
-data: <JAXTITAN_ROOT>/data/wikitext103_train.llama3.bin (120.1M tokens)
+data: <JAX_TITAN_ROOT>/data/wikitext103_train.llama3.bin (120.1M tokens)
 step    0 | loss <loss> | <ms> ms | <tokens/s> tok/s | MFU <percent>%
 peak HBM per device (GiB): <one value per GPU>
 ```
@@ -498,7 +498,7 @@ peak HBM per device (GiB): <one value per GPU>
 - The trainer stops with `FloatingPointError` if the loss is not finite.
 
 Give every run a time limit, sized from an earlier run, as the repository's
-training skill (`.cursor/skills/jaxtitan-training`) asks; a hung run does not
+training skill (`.cursor/skills/jax_titan_training`) asks; a hung run does not
 end by itself (section 11). Untested on SPUR:
 
 ```bash
@@ -512,7 +512,7 @@ To stop a run, stop the process in the container. Interrupting `spur exec`
 or the `docker exec` client does not stop it:
 
 ```bash
-on_node 'docker exec "$JT_CONTAINER" pkill -KILL -f "[j]axtitan.trainer.train"'
+on_node 'docker exec "$JT_CONTAINER" pkill -KILL -f "[j]ax_titan.trainer.train"'
 ```
 
 `scripts/cleanup_after_train.sh` (section 16) does the same and more.
@@ -619,7 +619,7 @@ The log prints `traced steps 10-11 into <dir>`. Then summarize the trace, on
 the CPU:
 
 ```bash
-in_jt bash $JT_SPUR/run.sh python -m jaxtitan.observability.profile $JT_ROOT/profiles/zb_pp2
+in_jt bash $JT_SPUR/run.sh python -m jax_titan.observability.profile $JT_ROOT/profiles/zb_pp2
 ```
 
 It prints, for each GPU, the share of the traced window spent in compute
@@ -682,7 +682,7 @@ home:
 
 ```bash
 cd /tmp
-sbatch --controller "$SPUR" --parsable -J "$USER-jaxtitan" -p "$PART" \
+sbatch --controller "$SPUR" --parsable -J "$USER-jax_titan" -p "$PART" \
   -N1 -w "$NODE" --gpus-per-node=8 --exclusive -c 64 -t 04:00:00 \
   -o "$JT_ROOT/logs/%j.out" -e "$JT_ROOT/logs/%j.err" \
   --wrap "bash $JT_SPUR/task.sh bash $JT_SPUR/train.sh zb_pp2_task \
@@ -752,7 +752,7 @@ on_node 'docker exec "$JT_CONTAINER" find "$JT_SCRATCH" -mindepth 1 -delete'
 | `docker` reports a permission error on the node | No docker access from `spur exec` | Stop and ask |
 | `venv/bin/activate: No such file or directory` | The venv does not exist yet | Section 7 |
 | `No module named 'orbax'` or `'pytest'` | venv made with getting_started.md's install line only | `pip install orbax-checkpoint pytest` (venv.sh does) |
-| `tokenizer_llama3.tiktoken` not found | No MaxText checkout next to JAX-Titan | Clone it (section 2), or `in_jt bash $JT_SPUR/run.sh env JAXTITAN_LLAMA3_TOKENIZER=<file> python -m jaxtitan.data.text` |
+| `tokenizer_llama3.tiktoken` not found | No MaxText checkout next to JAX-Titan | Clone it (section 2), or `in_jt bash $JT_SPUR/run.sh env JAX_TITAN_LLAMA3_TOKENIZER=<file> python -m jax_titan.data.text` |
 | No `step    0` within about 3 minutes of `compiled in`; `may be stuck` and `Initialize clique` in the log | Another job on the GPUs during RCCL setup | Stop the run; wait for `free`; rerun (section 11) |
 | The run keeps going after you interrupted `spur exec` or `docker exec` | The process lives in the container | Stop it in the container (section 10) |
 | `/dev/shm` collects `nccl-*` files | Killed runs leave RCCL segments behind | `scripts/cleanup_after_train.sh --yes` (section 16) |

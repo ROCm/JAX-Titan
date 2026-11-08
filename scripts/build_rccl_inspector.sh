@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the RCCL Inspector profiler plugin for ROCm, for the trainer's
-# --rccl_inspector: $JAXTITAN_ROOT/lib/librccl-profiler-inspector.so.
+# --rccl_inspector: $JAX_TITAN_ROOT/lib/librccl-profiler-inspector.so.
 #
 # RCCL carries the Inspector's source (plugins/profiler/inspector, from NCCL)
 # with a CUDA-only Makefile. Its only CUDA uses are cudaGetDevice and three
@@ -13,7 +13,7 @@
 #   bash scripts/build_rccl_inspector.sh [RCCL_OR_INSPECTOR_DIR]
 set -euo pipefail
 
-ROOT=${JAXTITAN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/.jaxtitan}
+ROOT=${JAX_TITAN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)/.jax_titan}
 DIR=${1:-${RCCL_SRC:-$ROOT/src/rccl-inspector}}
 if [ -f "$DIR/inspector.cc" ]; then SRC=$DIR; else SRC=$DIR/plugins/profiler/inspector; fi
 RCCL=$SRC

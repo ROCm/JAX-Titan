@@ -4,13 +4,13 @@ JAX-Titan records the training metrics of the ROCm scaling book (the
 rocm-dev-infra build plan): the definitions in its A0 methodology, and what
 its Chapter 9 (multi-node training), Chapter 6 (communication) and Chapter 13
 (debugging) measure on a training run. A run directory holds the raw records;
-`jaxtitan.observability` turns them into each metric.
+`jax_titan.observability` turns them into each metric.
 
 ## Recording a run
 
 ```bash
-export JAXTITAN_LAUNCH_TIME=$(date +%s.%N)   # optional: counts launch time in u0
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+export JAX_TITAN_LAUNCH_TIME=$(date +%s.%N)   # optional: counts launch time in u0
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=llama3.1-8b --num_stages=2 --steps=100 \
   --run_dir=runs/llama8b_pp2 \
   --eval_every=50 \
@@ -22,16 +22,16 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 
 | File | Contents | Written by |
 |---|---|---|
-| `train.jsonl` | One record per step (loss, gradient norm, step time, tokens/s, tokens/s per GPU, MFU, wall time) and timeline events: `start`, `layout`, `state`, `compile`, `data`, `memory`, `eval`, `save`, `checkpoint_closed` and `end` (`jaxtitan.observability.records`). A restart appends a new attempt. Processes past the first write `train.p<i>.jsonl` | the trainer |
-| `env.json` | Packages, git commits, ROCm; XLA flags and the RCCL, HSA, HIP and JAX environment; host, CPUs, GPUs (PCI bus ID, VBIOS, driver, power cap), RDMA NICs; the rank map (device, process, HIP index, PCI bus ID, mesh and stages) | the trainer, or `python -m jaxtitan.observability.env OUT.json` |
-| `power.jsonl` | Per GPU every `--power_sample_s` seconds (default 1): energy counter, power, GFX and memory clocks, hotspot temperature; every 10 s the share of time throttled by the power limit, temperatures or PROCHOT | the trainer, or `python -m jaxtitan.observability.power OUT.jsonl` beside any job |
-| `profile.json` | Per GPU: compute, exposed collective, copy and idle shares of the traced steps, exposed collective seconds per step, and the spread across GPUs | the trainer with `--profile_steps`, or `python -m jaxtitan.observability.profile TRACE --steps N --json OUT` |
+| `train.jsonl` | One record per step (loss, gradient norm, step time, tokens/s, tokens/s per GPU, MFU, wall time) and timeline events: `start`, `layout`, `state`, `compile`, `data`, `memory`, `eval`, `save`, `checkpoint_closed` and `end` (`jax_titan.observability.records`). A restart appends a new attempt. Processes past the first write `train.p<i>.jsonl` | the trainer |
+| `env.json` | Packages, git commits, ROCm; XLA flags and the RCCL, HSA, HIP and JAX environment; host, CPUs, GPUs (PCI bus ID, VBIOS, driver, power cap), RDMA NICs; the rank map (device, process, HIP index, PCI bus ID, mesh and stages) | the trainer, or `python -m jax_titan.observability.env OUT.json` |
+| `power.jsonl` | Per GPU every `--power_sample_s` seconds (default 1): energy counter, power, GFX and memory clocks, hotspot temperature; every 10 s the share of time throttled by the power limit, temperatures or PROCHOT | the trainer, or `python -m jax_titan.observability.power OUT.jsonl` beside any job |
+| `profile.json` | Per GPU: compute, exposed collective, copy and idle shares of the traced steps, exposed collective seconds per step, and the spread across GPUs | the trainer with `--profile_steps`, or `python -m jax_titan.observability.profile TRACE --steps N --json OUT` |
 | `rccl_inspector/` | Every collective and send/receive with its completion time, from the RCCL Inspector | the trainer with `--rccl_inspector` |
 | `results.json` | Every metric below for this run | the trainer at the end, or `summarize` |
 
 `--rccl_inspector` needs the Inspector plugin, which RCCL carries as CUDA-only
 source; `scripts/build_rccl_inspector.sh` ports and builds it for HIP into
-`$JAXTITAN_ROOT/lib`. `--eval_every` validates on `--eval_batches` fixed
+`$JAX_TITAN_ROOT/lib`. `--eval_every` validates on `--eval_batches` fixed
 batches of WikiText-103's validation split (held-out batches for synthetic
 data), the same batches every pass.
 
@@ -39,52 +39,52 @@ data), the same batches every pass.
 
 ```bash
 # Per run: results.json, and across runs: repeats, scaling, Pareto front, pipeline fit.
-python -m jaxtitan.observability.summarize runs/a runs/b ... \
+python -m jax_titan.observability.summarize runs/a runs/b ... \
   [--skip 5] [--ceilings ceilings.json] [--target_loss 3.0] [--json report.json]
 
 # Gate 0: each run's losses over the first K steps against a reference run.
-python -m jaxtitan.observability.summarize --gate0 runs/reference runs/a runs/b \
+python -m jax_titan.observability.summarize --gate0 runs/reference runs/a runs/b \
   --gate0_steps 10 --gate0_rtol 2e-3
 
 # ETTR, effective throughput, and the checkpoint interval and ETTR projected to 2,048 nodes.
-python -m jaxtitan.observability.ettr runs/a --json runs/a/ettr_model.json
+python -m jax_titan.observability.ettr runs/a --json runs/a/ettr_model.json
 
 # Calibrated ceilings of one GPU (BF16 and FP8 GEMM, HBM) for calibrated MFU.
-HIP_VISIBLE_DEVICES=0 python -m jaxtitan.observability.ceilings ceilings.json
+HIP_VISIBLE_DEVICES=0 python -m jax_titan.observability.ceilings ceilings.json
 
 # Step-time overhead of each failure detector.
-python -m jaxtitan.observability.detectors runs/detectors -- --model=llama3.1-8b --steps=30
+python -m jax_titan.observability.detectors runs/detectors -- --model=llama3.1-8b --steps=30
 
 # Collective completion times from an Inspector directory.
-python -m jaxtitan.observability.collectives runs/a/rccl_inspector
+python -m jax_titan.observability.collectives runs/a/rccl_inspector
 
 # Figures: MFU and step time over wall time with saves, validation and restarts marked,
 # loss against tokens, gradient norm, power; comparison.svg for several runs. Needs the
 # plots extra (matplotlib); the trainer draws <run_dir>/figures/ itself when it is there.
-python -m jaxtitan.observability.plot runs/a runs/b --out figures
+python -m jax_titan.observability.plot runs/a runs/b --out figures
 
 # Training FLOPs and communication per op and per stage, and the balanced layer split.
-python -m jaxtitan.observability.flops --model=llama3.1-8b --num_stages=2 \
+python -m jax_titan.observability.flops --model=llama3.1-8b --num_stages=2 \
   --peak_tflops=1436 --busbw_gbs=160
 
 # Before a run: its time, GPU-hours, energy, memory and data-parallel communication on
 # other GPU types and counts, from a run's measurements (docs/planning.md).
-python -m jaxtitan.planning.budget --model=llama3.1-8b --tokens=1e12 \
+python -m jax_titan.planning.budget --model=llama3.1-8b --tokens=1e12 \
   --gpu=MI325X,MI355X --gpus=1024 --seq_len=2048 --from_run=runs/a
 
 # A run's step part by part against its prediction, a fit, and the fit at other GPU
 # counts; records go to a performance database that flags regressions.
-python -m jaxtitan.planning.step --calibrate runs/a --ladder 8,64,256,512 \
+python -m jax_titan.planning.step --calibrate runs/a --ladder 8,64,256,512 \
   --ladder_batch_tokens 4194304 --perfdb perf.jsonl
-python -m jaxtitan.observability.perfdb perf.jsonl
+python -m jax_titan.observability.perfdb perf.jsonl
 
 # Collective bus bandwidth by message size on this node (RCCL; MORI-EP when installed),
 # and a running job's time left.
 bash scripts/bench_collectives.sh
-python -m jaxtitan.planning.remaining runs/a --target_tokens 2e12
+python -m jax_titan.planning.remaining runs/a --target_tokens 2e12
 ```
 
-The operator conformance bench (`jaxtitan.ops.conformance --modes=bench`) ends
+The operator conformance bench (`jax_titan.ops.conformance --modes=bench`) ends
 with each provider's geometric-mean speedup across shapes and its
 time-weighted speedup (total native time over total provider time).
 
@@ -97,7 +97,7 @@ time-weighted speedup (total native time over total provider time).
 | MFU sustained, training-active, end to end and rolling; HFU | step records, `layout` event (model and hardware FLOPs per step) | `summarize`, `ettr`, `plot` |
 | Aggregate MFU of several runs | runs | `summarize` |
 | Training FLOPs per op and stage (model and executed), communication volume per GPU, balanced stage split | model config and layout | `flops` |
-| Kernel speedups: geometric mean across shapes, time-weighted | bench rows | `jaxtitan.ops.conformance` |
+| Kernel speedups: geometric mean across shapes, time-weighted | bench rows | `jax_titan.ops.conformance` |
 | MFU, loss and power over time, with events | step records and events, `power.jsonl` | `plot` |
 | Scaling efficiency `E(N) = T(N) / ((N/N0) T(N0))` | runs at several device counts | `summarize` |
 | Step time p50, p95 and max across steps | step records | `summarize` |
@@ -148,7 +148,7 @@ time-weighted speedup (total native time over total provider time).
 - **`w_cp`** is how long the step loop waits for a save, plus the slowdown of
   the next `--wcp_steps` steps against the steady step time (Orbax finishes
   writing in the background).
-- **`u0`** runs from the launch (`JAXTITAN_LAUNCH_TIME`, else process start)
+- **`u0`** runs from the launch (`JAX_TITAN_LAUNCH_TIME`, else process start)
   until the first step ends, minus one steady step. Its stages: launch, Python
   imports, JAX init, setup (model and layout), state init or restore, compile,
   data, the first step's excess over a steady step (RCCL communicator setup and

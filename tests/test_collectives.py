@@ -5,12 +5,12 @@ import pathlib
 
 import pytest
 
-from jaxtitan.observability import perfdb
-from jaxtitan.planning import collectives
-from jaxtitan.planning import gpus
-from jaxtitan.planning import models
-from jaxtitan.planning import remaining
-from jaxtitan.planning import step
+from jax_titan.observability import perfdb
+from jax_titan.planning import collectives
+from jax_titan.planning import gpus
+from jax_titan.planning import models
+from jax_titan.planning import remaining
+from jax_titan.planning import step
 
 RESULTS = pathlib.Path(__file__).parent.parent / "docs" / "results"
 MI355X = gpus.get("MI355X")

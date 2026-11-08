@@ -1,7 +1,7 @@
 [
  {
-  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_native.jsonl",
-  "reference": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_dp.jsonl",
+  "run": "/home/cchen104/openxla/.jax_titan/logs/m4/maxtext_native.jsonl",
+  "reference": "/home/cchen104/openxla/.jax_titan/logs/m4/maxtext_dp.jsonl",
   "steps": 10,
   "max_rel_loss": 0.0006271125079992397,
   "max_rel_grad_norm": 0.02604128537077435,
@@ -10,8 +10,8 @@
   "pass": true
  },
  {
-  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_te.jsonl",
-  "reference": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_dp.jsonl",
+  "run": "/home/cchen104/openxla/.jax_titan/logs/m4/maxtext_te.jsonl",
+  "reference": "/home/cchen104/openxla/.jax_titan/logs/m4/maxtext_dp.jsonl",
   "steps": 10,
   "max_rel_loss": 0.0008676607525002753,
   "max_rel_grad_norm": 0.4878870700123147,
@@ -20,8 +20,8 @@
   "pass": true
  },
  {
-  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_aiter.jsonl",
-  "reference": "/home/cchen104/openxla/.jaxtitan/logs/m4/maxtext_dp.jsonl",
+  "run": "/home/cchen104/openxla/.jax_titan/logs/m4/maxtext_aiter.jsonl",
+  "reference": "/home/cchen104/openxla/.jax_titan/logs/m4/maxtext_dp.jsonl",
   "steps": 10,
   "max_rel_loss": 0.0008645937561339927,
   "max_rel_grad_norm": 0.012948718188405352,

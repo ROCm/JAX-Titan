@@ -60,9 +60,9 @@ def main(argv=None):
   if args.platform == "cpu":
     jax.config.update("jax_num_cpu_devices", 8)
 
-  from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
-  from jaxtitan import parallel  # pylint: disable=g-import-not-at-top
-  from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
+  from jax_titan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jax_titan import parallel  # pylint: disable=g-import-not-at-top
+  from jax_titan.models import llama  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
   P = jax.sharding.PartitionSpec  # pylint: disable=invalid-name

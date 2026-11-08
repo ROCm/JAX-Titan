@@ -10,11 +10,11 @@ import sys
 
 import pytest
 
-from jaxtitan.observability import collectives
-from jaxtitan.observability import ettr
-from jaxtitan.observability import power
-from jaxtitan.observability import records
-from jaxtitan.observability import summarize
+from jax_titan.observability import collectives
+from jax_titan.observability import ettr
+from jax_titan.observability import power
+from jax_titan.observability import records
+from jax_titan.observability import summarize
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 STEP_S, TOKENS = 2.0, 1000
@@ -100,8 +100,8 @@ def test_aggregate_mfu():
 
 
 def test_flops_model_matches_the_trainer_and_balances_stages():
-  from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
-  from jaxtitan.observability import flops  # pylint: disable=g-import-not-at-top
+  from jax_titan.models import llama  # pylint: disable=g-import-not-at-top
+  from jax_titan.observability import flops  # pylint: disable=g-import-not-at-top
 
   cfg = llama.FLAVORS["llama3.1-8b"]
   r = flops.report("llama3.1-8b", num_stages=2, seq_len=2048)
@@ -119,7 +119,7 @@ def test_flops_model_matches_the_trainer_and_balances_stages():
 
 
 def test_bench_speedups():
-  from jaxtitan.ops import conformance  # pylint: disable=g-import-not-at-top
+  from jax_titan.ops import conformance  # pylint: disable=g-import-not-at-top
 
   rows = [{"mode": "bench", "status": "pass", "provider": "p", "op": op, "ms": ms,
            "native_ms": 2.0, "speedup": 2.0 / ms} for op, ms in (("a", 1.0), ("b", 4.0))]
@@ -129,7 +129,7 @@ def test_bench_speedups():
 
 def test_figures(restarted_log, tmp_path):
   pytest.importorskip("matplotlib")
-  from jaxtitan.observability import plot  # pylint: disable=g-import-not-at-top
+  from jax_titan.observability import plot  # pylint: disable=g-import-not-at-top
 
   written = plot.plot_run(plot.series(restarted_log, window=4), tmp_path)
   assert written and written[0].stat().st_size > 10_000
@@ -221,7 +221,7 @@ def test_energy_between():
 
 def test_restart_rehearsal(tmp_path):
   run = tmp_path / "run"
-  common = [sys.executable, "-m", "jaxtitan.trainer.train", "--platform=cpu",
+  common = [sys.executable, "-m", "jax_titan.trainer.train", "--platform=cpu",
             "--model=llama3-test", "--data=synthetic", "--seq_len=32", "--microbatches=4",
             "--microbatch_size=4", "--steps=8", "--warmup_steps=1", "--checkpoint_every=3",
             f"--checkpoint_dir={tmp_path / 'ckpt'}", f"--run_dir={run}", "--power_sample_s=0"]
@@ -240,7 +240,7 @@ def test_restart_rehearsal(tmp_path):
 def test_trainer_run_dir(tmp_path):
   run = tmp_path / "run"
   result = subprocess.run(
-      [sys.executable, "-m", "jaxtitan.trainer.train", "--platform=cpu", "--model=llama3-test",
+      [sys.executable, "-m", "jax_titan.trainer.train", "--platform=cpu", "--model=llama3-test",
        "--data=synthetic", "--seq_len=32", "--microbatches=4", "--microbatch_size=4",
        "--steps=6", "--warmup_steps=1", "--eval_every=3", "--eval_batches=2",
        "--checkpoint_every=3", f"--checkpoint_dir={tmp_path / 'ckpt'}", f"--run_dir={run}",
