@@ -84,7 +84,16 @@ def measure(path, *, skip: int = 5, wcp_steps: int = 2, queue_s: float = 0.0) ->
   }
   losses["other_s"] = wall - productive - sum(losses.values())
   ettr = productive / wall if wall > 0 else None
+  start = next(iter(rec.events(records, "start")), None) or {}
+  flops = (layout or {}).get("flops_per_step")
+  peak = (start.get("args") or {}).get("peak_tflops_per_device")
+  capacity = start.get("num_devices", 0) * (peak or 0) * 1e12
+  mfu = {}
+  if flops and capacity and wall > 0:
+    mfu = {"mfu_steady": flops / step_s / capacity,
+           "mfu_end_to_end": flops * len(committed) / wall / capacity}
   return {
+      **mfu,
       "run": str(path),
       "attempts": len(attempts),
       "steady_step_s": step_s,
@@ -151,7 +160,9 @@ def main(argv=None):
   print(f"{m['run']}: {m['attempts']} attempt(s), {m['committed_steps']} committed steps "
         f"({m['lost_steps']} lost), wall {m['wall_s']:.0f} s, productive {m['productive_s']:.0f} s")
   print(f"ETTR {m['ettr']:.3f}; effective {m['effective_tokens_per_s']:.0f} tokens/s against "
-        f"{m['steady_tokens_per_s']:.0f} steady")
+        f"{m['steady_tokens_per_s']:.0f} steady"
+        + (f"; MFU {100 * m['mfu_end_to_end']:.2f}% end to end against "
+           f"{100 * m['mfu_steady']:.2f}% steady" if "mfu_end_to_end" in m else ""))
   print("losses: " + ", ".join(f"{k[:-2]} {v:.0f} s" for k, v in m["losses"].items()))
   model = {"measured": m}
   w_cp = args.w_cp_s if args.w_cp_s is not None else m["w_cp_s"]

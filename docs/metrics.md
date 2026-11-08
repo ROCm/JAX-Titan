@@ -57,7 +57,36 @@ python -m jaxtitan.observability.detectors runs/detectors -- --model=llama3.1-8b
 
 # Collective completion times from an Inspector directory.
 python -m jaxtitan.observability.collectives runs/a/rccl_inspector
+
+# Figures: MFU and step time over wall time with saves, validation and restarts marked,
+# loss against tokens, gradient norm, power; comparison.svg for several runs. Needs the
+# plots extra (matplotlib); the trainer draws <run_dir>/figures/ itself when it is there.
+python -m jaxtitan.observability.plot runs/a runs/b --out figures
+
+# Training FLOPs and communication per op and per stage, and the balanced layer split.
+python -m jaxtitan.observability.flops --model=llama3.1-8b --num_stages=2 \
+  --peak_tflops=1436 --busbw_gbs=160
+
+# Before a run: its time, GPU-hours, energy, memory and data-parallel communication on
+# other GPU types and counts, from a run's measurements (docs/planning.md).
+python -m jaxtitan.planning.budget --model=llama3.1-8b --tokens=1e12 \
+  --gpu=MI325X,MI355X --gpus=1024 --seq_len=2048 --from_run=runs/a
+
+# A run's step part by part against its prediction, a fit, and the fit at other GPU
+# counts; records go to a performance database that flags regressions.
+python -m jaxtitan.planning.step --calibrate runs/a --ladder 8,64,256,512 \
+  --ladder_batch_tokens 4194304 --perfdb perf.jsonl
+python -m jaxtitan.observability.perfdb perf.jsonl
+
+# Collective bus bandwidth by message size on this node (RCCL; MORI-EP when installed),
+# and a running job's time left.
+bash scripts/bench_collectives.sh
+python -m jaxtitan.planning.remaining runs/a --target_tokens 2e12
 ```
+
+The operator conformance bench (`jaxtitan.ops.conformance --modes=bench`) ends
+with each provider's geometric-mean speedup across shapes and its
+time-weighted speedup (total native time over total provider time).
 
 ## The metrics
 
@@ -65,6 +94,11 @@ python -m jaxtitan.observability.collectives runs/a/rccl_inspector
 |---|---|---|
 | Tokens/s and tokens/s per GPU | step records | `summarize` |
 | MFU, against the nominal peak and the calibrated ceiling | step records (nominal, `--peak_tflops_per_device`); `ceilings.json` | `summarize --ceilings` |
+| MFU sustained, training-active, end to end and rolling; HFU | step records, `layout` event (model and hardware FLOPs per step) | `summarize`, `ettr`, `plot` |
+| Aggregate MFU of several runs | runs | `summarize` |
+| Training FLOPs per op and stage (model and executed), communication volume per GPU, balanced stage split | model config and layout | `flops` |
+| Kernel speedups: geometric mean across shapes, time-weighted | bench rows | `jaxtitan.ops.conformance` |
+| MFU, loss and power over time, with events | step records and events, `power.jsonl` | `plot` |
 | Scaling efficiency `E(N) = T(N) / ((N/N0) T(N0))` | runs at several device counts | `summarize` |
 | Step time p50, p95 and max across steps | step records | `summarize` |
 | Step time across ranks; straggler spread | one log per process; per-GPU shares and clocks | `summarize` (process spread), `profile` (spread across GPUs), `power` (clocks) |
@@ -89,9 +123,25 @@ python -m jaxtitan.observability.collectives runs/a/rccl_inspector
   `--wcp_steps` steps after each save (default 2) are left out of step-time
   statistics. Step time is the wall time of the compiled step, from dispatch
   until the loss reaches the host.
-- **MFU** is training FLOPs per step (6N plus causal attention) over step time
-  times devices times the peak: 2,500 TFLOP/s BF16 for MI355X nominally, or
-  the BF16 GEMM rate `ceilings` measures.
+- **MFU** is model FLOPs per step (6N plus causal attention: a matmul's
+  backward costs twice its forward, so training is three forward passes) over
+  step time times devices times the peak: 2,500 TFLOP/s BF16 for MI355X
+  nominally, or the BF16 GEMM rate `ceilings` measures. Over many steps it is
+  always total model FLOPs over total elapsed time, never a mean of per-step
+  MFUs, which would weigh a slow step like a fast one. `summarize` reports it
+  at the median step; **sustained**, over the steady steps; **training-active**,
+  over every step the trainer ran; **end to end**, over the committed steps and
+  the wall time of all attempts (startup, saves, validation, lost work and
+  relaunch included, so it is ETTR times the steady MFU); and **rolling**, over
+  each window of 50 consecutive steps past an attempt's first step.
+- **HFU** counts the FLOPs the GPUs execute: with rematerialized layers (the
+  default `--remat`), every decoder layer's forward pass again, 1.31x the
+  model FLOPs for Llama 3.1 8B at 2,048 tokens.
+- **Speedups across kernel shapes.** The geometric mean weighs every shape the
+  same; the time-weighted speedup weighs them by time. Neither is the gain of a
+  training step, which depends on that kernel's share of the step: TE's
+  operators give 1.56x as a geometric mean and 2.60x time-weighted over their
+  bench shapes, and TE attention made the Llama 3.1 8B step 1.16x faster.
 - **Exposed communication** is the time a GPU runs collective kernels while no
   compute kernel runs, from a `jax.profiler` trace. Summed kernel durations
   are not step time.
@@ -173,6 +223,21 @@ python -m jaxtitan.observability.collectives runs/a/rccl_inspector
   shapes"): `GetModuleOutputSlices` in `gpu_executable.cc` lists the result
   tuple itself, at upstream XLA's head too, so they need an XLA fix first.
 
+- **MFU variants of the recipe run** ([recipe](recipes/maxtext-llama3.1-8b.md),
+  1,000 steps with a rehearsed restart): 8.10% at the median step, 8.12%
+  sustained, 7.99% training-active, 5.99% end to end (ETTR 0.739), 6.9-8.2%
+  over 50-step windows.
+- **FLOPs model, Llama 3.1 8B on 2 stages** (`flops`): 46.6 GFLOP per token,
+  3.06 PFLOP per step of model FLOPs and 4.01 PFLOP executed with
+  rematerialization. The last stage carries the output head, 11% more executed
+  FLOPs than the first with 16 and 16 layers, so `--stage_layers=17,15`
+  balances them, the split measured fastest on 2026-11-05 (1.426 s against
+  1.454 s). At XLA's 1,436 TFLOP/s the stages' compute takes 331 and 367 ms of
+  the 1.50 s step. Each GPU all-reduces 24 GB of gradients per step, about
+  150 ms at the 160 GB/s the Inspector measured, close to the 140 ms of
+  exposed collective time in traces; with gradients reduced in every
+  microbatch, as MaxText's layers are today, it is 193 GB.
+
 ## Not covered yet
 
 These need more than one node, admin rights, or other chapters' deliverables:
@@ -182,6 +247,9 @@ These need more than one node, admin rights, or other chapters' deliverables:
 - Step time across nodes and RCCL communicator setup by node count (M5, Q1);
   today the first step's excess holds communicator setup.
 - Power caps below the default (P2), which need admin rights.
-- The step-time projection's residual table, which needs the book's
-  `kernel_db` and `comm_model.json` (Chapters 5 and 6).
+- Per-op kernel times for the step-time projection (the book's `kernel_db`,
+  Chapter 5). `planning.collectives` is the communication model (Chapter
+  6's `comm_model.json`), measured on one MI355X node. `planning.step` sets
+  predicted parts against a run's, but its compute is one efficiency for
+  every kernel.
 - Time to detect and to localize injected faults, and their accuracy (DBG1).

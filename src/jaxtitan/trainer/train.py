@@ -431,6 +431,14 @@ def _build_spmd(args, cfg, devices, optimizer) -> Layout:
   )
 
 
+def _mkdir(*parts):
+  import pathlib  # pylint: disable=g-import-not-at-top
+
+  path = pathlib.Path(*parts)
+  path.mkdir(parents=True, exist_ok=True)
+  return path
+
+
 def _enable_rccl_inspector(run_dir: str):
   """Loads the RCCL Inspector into RCCL, which reads these before JAX starts it."""
   plugin = os.environ.get("JAXTITAN_RCCL_INSPECTOR") or str(
@@ -521,11 +529,16 @@ def main(argv=None):
     cfg = llama.FLAVORS[args.model]
     build = _build_mpmd if args.parallel == "mpmd" else _build_spmd
     layout = build(args, cfg, devices, optimizer)
+    from jaxtitan.observability import flops as flops_lib  # pylint: disable=g-import-not-at-top
+
+    tokens = num_mb * mb * seq
     work = Workload(
         num_params=cfg.num_params(),
-        tokens_per_step=num_mb * mb * seq,
-        flops_per_step=cfg.flops_per_token(seq) * num_mb * mb * seq,
+        tokens_per_step=tokens,
+        flops_per_step=cfg.flops_per_token(seq) * tokens,
         vocab_size=cfg.vocab_size,
+        hardware_flops_per_step=(cfg.flops_per_token(seq) + flops_lib.recompute_flops_per_token(
+            cfg, seq, args.remat)) * tokens,
     )
   print(
       f"jax {jax.__version__} | {len(devices)} x {devices[0].device_kind} | "
@@ -535,7 +548,7 @@ def main(argv=None):
   log.event(
       "layout", structure=layout.structure, num_params=work.num_params,
       tokens_per_step=work.tokens_per_step, flops_per_step=work.flops_per_step,
-      placement=layout.placement,
+      hardware_flops_per_step=work.hardware_flops_per_step, placement=layout.placement,
   )
   if args.run_dir and jax.process_index() == 0:
     from jaxtitan.observability import env as env_lib  # pylint: disable=g-import-not-at-top
@@ -732,6 +745,13 @@ def main(argv=None):
       print(f"results: {os.path.join(args.run_dir, 'results.json')}", flush=True)
     except (ValueError, KeyError, OSError) as e:
       print(f"no results.json: {type(e).__name__}: {e}", flush=True)
+    try:
+      from jaxtitan.observability import plot  # pylint: disable=g-import-not-at-top
+
+      figures = plot.plot_run(plot.series(args.run_dir), _mkdir(args.run_dir, "figures"))
+      print(f"figures: {', '.join(map(str, figures))}", flush=True)
+    except ImportError:
+      pass
   return 0
 
 

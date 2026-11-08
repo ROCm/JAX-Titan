@@ -54,9 +54,29 @@ This is the target design; [What works](#what-works) lists what runs today.
 - The ROCm scaling book's training metrics: a run directory (`--run_dir`)
   with step records and timeline events, `env.json`, GPU power and energy,
   validation loss, traces and RCCL collective times, summarized as step-time
-  percentiles, MFU against the nominal and a calibrated peak, startup and
-  checkpoint costs, ETTR, energy per token, pipeline utilization, scaling
-  efficiency and Gate 0 ([docs/metrics.md](docs/metrics.md)).
+  percentiles, MFU (sustained, rolling and end to end, against the nominal and
+  a calibrated peak) and HFU, startup and checkpoint costs, ETTR, energy per
+  token, pipeline utilization, scaling efficiency and Gate 0, with figures of
+  MFU, loss and power over time and a per-op, per-stage FLOPs and
+  communication model ([docs/metrics.md](docs/metrics.md)).
+- A training budget planner (`python -m jaxtitan.planning.budget`). For a
+  dense or mixture-of-experts model, a token or time budget and one or more
+  GPU types, it gives the run's FLOPs, time, GPU-hours, energy and cost:
+  - GPU types: MI300X, MI325X, MI350X, MI355X, MI455X, H100, H200, B200 and
+    TPU v5p, from vendor specs;
+  - memory per GPU and the layouts that fit;
+  - whether data-parallel communication hides behind compute;
+  - inputs measured by a JAX-Titan run where one exists.
+- A performance model for scaling up ([docs/planning.md](docs/planning.md)):
+  - **Collectives:** RCCL and MORI-EP by message size, algorithm, protocol
+    and bus bandwidth (`planning.collectives`), measured on 8x MI355X with
+    `scripts/bench_collectives.sh`.
+  - **Step time:** compute, each parallelism's collectives, overlap,
+    pipeline bubble and runtime gaps (`planning.step`). It's calibrated
+    against a run's profile and predicts other GPU counts.
+  - **Time left** in a running job (`planning.remaining`).
+  - **A performance database** of predicted and measured runs that flags
+    regressions (`observability.perfdb`).
 
 On 8x AMD Instinct MI355X, Llama 3.1 8B with 2 pipeline stages of 4 GPUs and
 65,536 tokens per step trains at 1.45 s per step (45.1k tokens/s, 10.5% MFU)
@@ -125,7 +145,8 @@ JAX-Titan on AMD's SPUR cluster.
 | `src/jaxtitan/ops` | Semantic operators: per-op provider policy, native JAX, ROCm TE, JAX-AITER and JAX-Triton (Triton and Gluon) providers, and the conformance harness |
 | `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
 | `src/jaxtitan/trainer` | Training entry point (`python -m jaxtitan.trainer.train`) and Orbax checkpoints |
-| `src/jaxtitan/observability` | Per-GPU busy and idle time from profiler traces |
+| `src/jaxtitan/observability` | Run records, metrics, figures, ETTR, ceilings, FLOPs model and per-GPU busy and idle time from profiler traces |
+| `src/jaxtitan/planning` | Training budget planner and performance model: model shapes, GPU specs, memory, RCCL and MORI collectives, step time, time left |
 | `examples/` | MPMD spike and parity checks |
 | `tests/` | CPU tests: schedules and layouts against `jax.jit`, checkpoint resume, MaxText and MaxDiffusion models |
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |

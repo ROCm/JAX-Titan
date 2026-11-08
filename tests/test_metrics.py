@@ -27,7 +27,8 @@ def _attempt(t, first_step, last_step, saves, *, restored=0, completed=False, sl
        "main_start": t + 2, "jax_ready": t + 3, "num_devices": 8, "process_count": 1,
        "device_kind": "test", "args": {"model": "m", "microbatches": 8, "seed": 0,
                                        "peak_tflops_per_device": 1.0}},
-      {"event": "layout", "time": t + 4, "tokens_per_step": TOKENS, "flops_per_step": 8e12},
+      {"event": "layout", "time": t + 4, "tokens_per_step": TOKENS, "flops_per_step": 8e12,
+       "hardware_flops_per_step": 10e12},
       {"event": "state", "time": t + 10, "seconds": 5.0, "restored_step": restored},
       {"event": "compile", "time": t + 30, "lower_s": 1.0, "compile_s": 19.0},
       {"event": "data", "time": t + 31, "seconds": 1.0},
@@ -74,6 +75,64 @@ def test_summary_of_a_restarted_run(restarted_log):
   assert c["saves"] == 3 and c["blocking_s"]["p50"] == 3.0
   assert c["w_cp_s"]["p50"] == 4.0
   assert c["restore_s"]["p50"] == 5.0
+
+
+def test_mfu_variants_of_a_restarted_run(restarted_log):
+  m = summarize.run_metrics(restarted_log, skip=2, wcp_steps=1)
+  # 8e12 FLOPs per step on 8 devices of 1 TFLOP/s: MFU 0.5 at the 2 s steady step.
+  assert m["mfu_sustained"] == pytest.approx(0.5) and m["hfu_sustained"] == pytest.approx(0.625)
+  steps = records.steps(records.read(restarted_log))
+  active = sum(r["step_time_s"] for r in steps)
+  assert m["mfu_training_active"] == pytest.approx(len(steps) * STEP_S / active * 0.5)
+  e = ettr.measure(restarted_log, skip=2, wcp_steps=1)
+  assert m["mfu_end_to_end"] == pytest.approx(16 * 8e12 / e["wall_s"] / 8e12)
+  assert m["mfu_end_to_end"] == pytest.approx(e["mfu_end_to_end"])
+  rolling = summarize.rolling_mfu(records.read(restarted_log), 8e12, 8e12, window=4)
+  # Past each attempt's first step, a window holds at most one step slowed by a save.
+  assert min(r for _, _, r in rolling) == pytest.approx(4 * 8e12 / (4 * STEP_S + 1.0) / 8e12)
+  assert max(r for _, _, r in rolling) == pytest.approx(0.5)
+
+
+def test_aggregate_mfu():
+  runs = [{"mfu_training_active": 0.5, "peak_flops_per_s": 1.0, "active_s": 30.0},
+          {"mfu_training_active": 0.2, "peak_flops_per_s": 1.0, "active_s": 10.0}]
+  assert summarize.aggregate_mfu(runs) == pytest.approx((0.5 * 30 + 0.2 * 10) / 40)
+
+
+def test_flops_model_matches_the_trainer_and_balances_stages():
+  from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
+  from jaxtitan.observability import flops  # pylint: disable=g-import-not-at-top
+
+  cfg = llama.FLAVORS["llama3.1-8b"]
+  r = flops.report("llama3.1-8b", num_stages=2, seq_len=2048)
+  assert r["model_flops_per_token"] == pytest.approx(cfg.flops_per_token(2048), rel=1e-4)
+  layer = sum(flops.layer_forward(flops.Dims.of(cfg), 2048).values())
+  recompute = cfg.num_layers * layer * r["tokens_per_step"]
+  assert r["executed_flops"] - r["model_flops"] == pytest.approx(recompute)
+  assert flops.recompute_flops_per_token(cfg, 2048, True) * r["tokens_per_step"] == recompute
+  # The last stage also holds the output head.
+  assert r["balanced_split"] == [17, 15]
+  stage = r["stages"][0]
+  assert stage["gradient_bytes"] == pytest.approx(2 * 3 / 4 * stage["params"] * 4)
+  per_microbatch = flops.report("llama3.1-8b", reduce_grads="microbatch")["stages"][0]
+  assert per_microbatch["gradient_bytes"] == pytest.approx(8 * stage["gradient_bytes"])
+
+
+def test_bench_speedups():
+  from jaxtitan.ops import conformance  # pylint: disable=g-import-not-at-top
+
+  rows = [{"mode": "bench", "status": "pass", "provider": "p", "op": op, "ms": ms,
+           "native_ms": 2.0, "speedup": 2.0 / ms} for op, ms in (("a", 1.0), ("b", 4.0))]
+  total = next(s for s in conformance.speedups(rows) if s["op"] == "all")
+  assert total["geomean"] == pytest.approx(1.0) and total["time_weighted"] == pytest.approx(0.8)
+
+
+def test_figures(restarted_log, tmp_path):
+  pytest.importorskip("matplotlib")
+  from jaxtitan.observability import plot  # pylint: disable=g-import-not-at-top
+
+  written = plot.plot_run(plot.series(restarted_log, window=4), tmp_path)
+  assert written and written[0].stat().st_size > 10_000
 
 
 def test_ettr_of_a_restarted_run(restarted_log):

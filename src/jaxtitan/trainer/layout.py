@@ -44,6 +44,8 @@ class Workload:
 
   Token models train on token windows below `vocab_size`. Models without a
   dataset yet give `next_batch(step)`, a synthetic host batch for `put_batch`.
+  `flops_per_step` counts model FLOPs (for MFU); `hardware_flops_per_step` adds
+  what rematerialization recomputes (for HFU), when known.
   """
 
   num_params: int
@@ -51,6 +53,7 @@ class Workload:
   flops_per_step: float
   vocab_size: int | None = None
   next_batch: Callable[[int], Any] | None = None
+  hardware_flops_per_step: float | None = None
 
 
 def abstract(shapes, shardings):

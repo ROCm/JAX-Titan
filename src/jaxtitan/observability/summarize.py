@@ -12,7 +12,12 @@ log file. For each run (written to `<run_dir>/results.json`):
 - step time p50, p95 and max over steady steps: each attempt's first `--skip`
   steps and the steps a checkpoint save slows are left out;
 - tokens/s, tokens/s per GPU, and MFU against the nominal peak and, with
-  `--ceilings` (`jaxtitan.observability.ceilings`), the calibrated one;
+  `--ceilings` (`jaxtitan.observability.ceilings`), the calibrated one. MFU is
+  model FLOPs over elapsed time, never a mean of per-step MFUs: at the median
+  step; sustained (over the steady steps); training-active (over every step);
+  end to end (committed steps over the wall time of all attempts, ETTR x MFU);
+  and its range over windows of 50 steps. HFU, sustained, counts the FLOPs
+  rematerialization recomputes too (`jaxtitan.observability.flops`);
 - loss, gradient norm, non-finite steps, and peak HBM per device;
 - startup stages (the restart overhead `u0`): launch, Python imports, JAX
   init, setup, state init or restore, compile, data, and the first step's
@@ -203,9 +208,23 @@ def run_metrics(path, *, skip: int = 5, wcp_steps: int = 2, ceilings: dict | Non
     if out.get("devices"):
       out["tokens_per_s_per_gpu"] = out["tokens_per_s"] / out["devices"]
     flops = (layout or {}).get("flops_per_step")
+    hardware = (layout or {}).get("hardware_flops_per_step")
     peak = ((start or {}).get("args") or {}).get("peak_tflops_per_device")
     if flops and peak and out.get("devices"):
-      out["mfu"] = flops / p50 / (out["devices"] * peak * 1e12)
+      capacity = out["devices"] * peak * 1e12
+      out["mfu"] = flops / p50 / capacity
+      out["peak_flops_per_s"] = capacity
+      out["active_s"] = sum(r["step_time_s"] for r in steps)
+      out["mfu_sustained"] = flops * len(times) / sum(times) / capacity
+      out["mfu_training_active"] = (
+          flops * len(steps) / sum(r["step_time_s"] for r in steps) / capacity)
+      rolling = [m for _, _, m in rolling_mfu(records, flops, capacity)]
+      if rolling:
+        out["mfu_rolling"] = {"window_steps": ROLLING_STEPS, "min": min(rolling),
+                              "max": max(rolling)}
+      if hardware:
+        out["hfu_sustained"] = hardware * len(times) / sum(times) / capacity
+      out.update(_end_to_end_mfu(path, flops, capacity, skip, wcp_steps))
     else:
       out["mfu"] = statistics.median(r["mfu"] for r in steady)
     if flops and ceilings and ceilings.get("bf16_tflops") and out.get("devices"):
@@ -250,6 +269,37 @@ def run_metrics(path, *, skip: int = 5, wcp_steps: int = 2, ceilings: dict | Non
   return out
 
 
+ROLLING_STEPS = 50
+
+
+def rolling_mfu(records, flops_per_step: float, capacity: float,
+                window: int = ROLLING_STEPS) -> list[tuple[float, int, float]]:
+  """(wall time, step, MFU) over each window of `window` consecutive steps of an
+  attempt, past its first step (one-time setup): model FLOPs over the window's
+  summed step time, not a mean of step MFUs."""
+  out = []
+  for attempt in rec.attempts(records):
+    steps = rec.steps(attempt)[1:]
+    for i in range(window, len(steps) + 1):
+      chunk = steps[i - window:i]
+      seconds = sum(r["step_time_s"] for r in chunk)
+      out.append((chunk[-1].get("time", 0.0), chunk[-1]["step"],
+                  flops_per_step * window / seconds / capacity))
+  return out
+
+
+def _end_to_end_mfu(path, flops: float, capacity: float, skip: int, wcp_steps: int) -> dict:
+  """MFU over the whole wall time of all attempts, from committed steps (ETTR x MFU)."""
+  from jaxtitan.observability import ettr  # pylint: disable=g-import-not-at-top
+
+  try:
+    m = ettr.measure(path, skip=skip, wcp_steps=wcp_steps)
+  except (ValueError, KeyError):
+    return {}
+  return {"mfu_end_to_end": flops * m["committed_steps"] / m["wall_s"] / capacity,
+          "ettr": m["ettr"]}
+
+
 def time_to_target(records, target: float) -> dict | None:
   """Wall time from the first launch, and summed step time, until the first
   validation loss at or below `target`."""
@@ -279,7 +329,7 @@ def _run_dir_extras(path: pathlib.Path, records, steady, out) -> dict:
       watts = sum(g["mean_power_w"] for g in per_gpu.values() if g["mean_power_w"])
       steps_in_window = sum(1 for r in rec.steps(records) if t0 < r["time"] <= t1)
       tokens = steps_in_window * out["tokens_per_step"]
-      clocks = [g["mean_gfx_mhz"] for g in per_gpu.values()]
+      clocks = [g["mean_gfx_mhz"] for g in per_gpu.values() if g["mean_gfx_mhz"]] or [0.0]
       source = next((s.get("source") for s in samples if s.get("source")), None)
       extras["energy"] = {
           "boundary": "GPU",
@@ -327,6 +377,16 @@ def repeats(runs: list[dict]) -> list[dict]:
                 "median_s": median, "spread": (max(p50s) - min(p50s)) / median,
                 "cv": std / median, "regression_threshold_s": median + 3 * std})
   return out
+
+
+def aggregate_mfu(runs: list[dict]) -> float | None:
+  """Model FLOPs of every run over the peak capacity they had while stepping."""
+  usable = [m for m in runs if m.get("mfu_training_active") and m.get("active_s")]
+  if len(usable) < 2:
+    return None
+  capacity = sum(m["peak_flops_per_s"] * m["active_s"] for m in usable)
+  return sum(m["mfu_training_active"] * m["peak_flops_per_s"] * m["active_s"]
+             for m in usable) / capacity
 
 
 def scaling(runs: list[dict]) -> list[dict]:
@@ -411,6 +471,17 @@ def print_run(m: dict):
   print(f"  tokens/s {_fmt(m.get('tokens_per_s'), '.0f')} | per GPU "
         f"{_fmt(m.get('tokens_per_s_per_gpu'), '.0f')} | MFU {_fmt(100 * m['mfu'] if m.get('mfu') else None, '.1f')}%"
         + (f" (calibrated {100 * m['mfu_calibrated']:.1f}%)" if m.get("mfu_calibrated") else ""))
+  if m.get("mfu_sustained"):
+    parts = [f"sustained {100 * m['mfu_sustained']:.2f}%",
+             f"training-active {100 * m['mfu_training_active']:.2f}%"]
+    if m.get("mfu_end_to_end"):
+      parts.append(f"end to end {100 * m['mfu_end_to_end']:.2f}% (ETTR {m['ettr']:.3f})")
+    if m.get("mfu_rolling"):
+      r = m["mfu_rolling"]
+      parts.append(f"{r['window_steps']}-step rolling {100 * r['min']:.2f}-{100 * r['max']:.2f}%")
+    if m.get("hfu_sustained"):
+      parts.append(f"HFU {100 * m['hfu_sustained']:.2f}%")
+    print("  MFU " + ", ".join(parts))
   if m.get("loss"):
     print(f"  loss {m['loss']['first']:.4f} -> {m['loss']['last']:.4f}"
           + (f" | grad norm p50 {m['grad_norm']['p50']:.3f}" if m.get("grad_norm") else "")
@@ -478,7 +549,10 @@ def main(argv=None):
     runs.append(m)
     print_run(m)
   report = {"runs": runs, "repeats": repeats(runs), "scaling": scaling(runs),
-            "pareto": pareto(runs), "pipeline_fit": bubble(runs)}
+            "pareto": pareto(runs), "pipeline_fit": bubble(runs),
+            "aggregate_mfu": aggregate_mfu(runs)}
+  if report["aggregate_mfu"] is not None:
+    print(f"aggregate MFU over {len(runs)} runs: {100 * report['aggregate_mfu']:.2f}%")
   for r in report["repeats"]:
     print(f"repeats ({len(r['runs'])}): median {r['median_s']:.3f} s, spread {100 * r['spread']:.1f}%, "
           f"CV {100 * r['cv']:.1f}%, regression threshold {r['regression_threshold_s']:.3f} s")
