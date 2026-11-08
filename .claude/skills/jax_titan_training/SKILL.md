@@ -3,10 +3,12 @@ name: jax_titan_training
 description: >-
   Runs, monitors, compares and cleans up JAX-Titan training jobs on AMD
   Instinct GPUs. Use when launching or benchmarking jax_titan.trainer.train or
-  the examples, when a run hangs, slows down, runs out of memory or diverges,
-  when comparing pipeline schedules or layouts against the no-pipeline
-  baseline, and after a job finishes, fails or is stopped, to stop its
-  processes, free the GPUs and remove checkpoints.
+  the examples, when checking a shared dev node before a job (disk space
+  left, the top disk users, which users hold the GPUs), when a run hangs,
+  slows down, runs out of memory or diverges, when comparing pipeline
+  schedules or layouts against the no-pipeline baseline, and after a job
+  finishes, fails or is stopped, to stop its processes, free the GPUs and
+  remove checkpoints.
 ---
 
 # JAX-Titan Training Guide
@@ -22,15 +24,18 @@ debug session.
 
 ## Before a Run
 
-1. On the host, `scripts/gpus_free.sh` must print `free`. If it prints
-   `busy`, wait or ask the user. Never stop another user's process without
-   the user's explicit permission.
+1. On the host, run `scripts/preflight_dev.sh` (about 25 s): disk space left
+   on each filesystem, the top 10 users by disk (`--top N`; home and temp
+   directories plus container layers), and which users hold each GPU, with
+   the GPUs that have no load. `scripts/gpus_free.sh` must print `free`. If
+   either shows busy GPUs, wait or ask the user. Never stop another user's
+   process without the user's explicit permission.
 2. In the container: `source scripts/env.sh`, and pass
    `XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS"` to GPU runs.
 3. After code changes, run the CPU tests first: `python -m pytest tests/`.
-4. Plan checkpoint space: a Llama 3.1 8B checkpoint is 80 GB and the trainer
-   keeps the latest two. `/dev/shm` is host RAM, so do not leave checkpoints
-   there.
+4. Plan checkpoint space against the free space the preflight reports: a
+   Llama 3.1 8B checkpoint is 80 GB and the trainer keeps the latest two.
+   `/dev/shm` is host RAM, so do not leave checkpoints there.
 5. Wrap the run in `timeout -s KILL <seconds>`, record it with `--run_dir`
    (step records and timeline events, `env.json`, GPU power, `results.json`;
    see `docs/metrics.md`), and send stdout and stderr to
@@ -87,8 +92,9 @@ blocks, and `--model_overrides` takes JSON config overrides.
 - Red flags:
   - No step 0 within 3 minutes of `compiled in`: grep the log for
     `may be stuck` with `Initialize clique`. That RCCL hang happens when
-    another job uses the same GPUs and does not recover. Stop the run, check
-    `rocm-smi --showpids`, and rerun on an idle node.
+    another job uses the same GPUs and does not recover. Stop the run, see
+    who holds the GPUs with `scripts/preflight_dev.sh`, and rerun on an idle
+    node.
   - `RESOURCE_EXHAUSTED` in a fragment such as `p33_stage1_fwd_call15`: use
     fewer microbatches, `--stage_fsdp`, or `--tensor_parallel`. FLUX.1-dev
     needs 4 stages: on 2, the first stage's 7.9B parameters with fp32 AdamW
