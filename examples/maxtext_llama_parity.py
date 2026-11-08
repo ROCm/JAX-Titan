@@ -3,7 +3,7 @@
 Builds a small Llama 3.1 from MaxText's `llama3.1-8b` config and checks that
 1. the JAX-Titan stages initialize to MaxText's `Transformer` weights and give
    the same logits,
-2. `jaxtitan.models.llama`, given the same weights in its layout, gives the
+2. `jax_titan.models.llama`, given the same weights in its layout, gives the
    same activations at every stage boundary and the same loss, and
 3. the MPMD pipeline step over the stages matches the same step as one
    single-mesh `jax.jit` program, in loss and parameters.
@@ -47,10 +47,10 @@ def main(argv=None):
 
   from flax import linen as nn  # pylint: disable=g-import-not-at-top
   from flax import nnx  # pylint: disable=g-import-not-at-top
-  from jaxtitan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
-  from jaxtitan import ops  # pylint: disable=g-import-not-at-top
-  from jaxtitan.models import llama  # pylint: disable=g-import-not-at-top
-  from jaxtitan.models.adapters import maxtext as mt  # pylint: disable=g-import-not-at-top
+  from jax_titan import mpmd as jt_mpmd  # pylint: disable=g-import-not-at-top
+  from jax_titan import ops  # pylint: disable=g-import-not-at-top
+  from jax_titan.models import llama  # pylint: disable=g-import-not-at-top
+  from jax_titan.models.adapters import maxtext as mt  # pylint: disable=g-import-not-at-top
   from maxtext.models import models  # pylint: disable=g-import-not-at-top
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
@@ -110,7 +110,7 @@ def main(argv=None):
   print(f"{num_stages} MaxText stages match MaxText's Transformer: "
         f"max |logits diff| {float(np.max(np.abs(np.asarray(logits) - np.asarray(ref_logits)))):.2e}")
 
-  # 1b. The same, with attention through jaxtitan.ops (native JAX).
+  # 1b. The same, with attention through jax_titan.ops (native JAX).
   routed = mt.Model(cfg, meshes[0], num_stages=num_stages, layers=stage_layers,
                     attention=ops.attention)
 
@@ -124,10 +124,10 @@ def main(argv=None):
   assert any(s.op == "attention" for s in ops.selections()), "attention was not routed"
   np.testing.assert_allclose(np.asarray(routed_logits), np.asarray(ref_logits), rtol=1e-5,
                              atol=1e-5)
-  print("with attention through jaxtitan.ops, they still match: max |logits diff| "
+  print("with attention through jax_titan.ops, they still match: max |logits diff| "
         f"{float(np.max(np.abs(np.asarray(routed_logits) - np.asarray(ref_logits)))):.2e}")
 
-  # 2. jaxtitan.models.llama gives the same stage outputs with the same weights.
+  # 2. jax_titan.models.llama gives the same stage outputs with the same weights.
   llama_cfg = mt.llama_config(cfg)
   llama_params = mt.llama_params(cfg, host_params)
   targets = rng.integers(0, cfg.vocab_size, (mb, seq), dtype=np.int32)
@@ -150,7 +150,7 @@ def main(argv=None):
   for i, (a, b) in enumerate(zip(ours, theirs)):
     np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-5, atol=1e-5,
                                err_msg=f"stage {i}")
-  print(f"jaxtitan.models.llama matches the MaxText stages ({llama_cfg.rope_scaling}): "
+  print(f"jax_titan.models.llama matches the MaxText stages ({llama_cfg.rope_scaling}): "
         f"max |activation diff| "
         f"{max(float(np.max(np.abs(np.asarray(a) - np.asarray(b)))) for a, b in zip(ours, theirs)):.2e}")
 

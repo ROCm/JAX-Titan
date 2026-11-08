@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from jaxtitan.observability import records
+from jax_titan.observability import records
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 FLAGS = [
@@ -42,7 +42,7 @@ MODELS = {
 def _run(provider, log, *flags):
   # os.environ, not the process environment: see conftest's ROCPROFILER note.
   result = subprocess.run(
-      [sys.executable, "-m", "jaxtitan.trainer.train", *FLAGS, *MODELS[provider],
+      [sys.executable, "-m", "jax_titan.trainer.train", *FLAGS, *MODELS[provider],
        f"--log_file={log}", *flags],
       capture_output=True, text=True, check=False, cwd=REPO, env=dict(os.environ),
   )
@@ -74,7 +74,7 @@ def test_maxtext_starts_from_a_parameter_checkpoint(tmp_path):
     pytest.skip("needs maxtext")
   import jax  # pylint: disable=g-import-not-at-top
   import numpy as np  # pylint: disable=g-import-not-at-top
-  from jaxtitan.models.adapters import maxtext as mt  # pylint: disable=g-import-not-at-top
+  from jax_titan.models.adapters import maxtext as mt  # pylint: disable=g-import-not-at-top
   from maxtext.common import checkpointing  # pylint: disable=g-import-not-at-top
 
   # The trainer's own initialization, saved as MaxText's parameter-only checkpoint.

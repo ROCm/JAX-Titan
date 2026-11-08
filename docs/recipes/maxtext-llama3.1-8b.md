@@ -5,15 +5,15 @@ pipeline with ROCm TE fused attention, trained on WikiText-103 with every
 metric of [metrics.md](../metrics.md) recorded.
 
 ```bash
-export JAXTITAN_LAUNCH_TIME=$(date +%s.%N)
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+export JAX_TITAN_LAUNCH_TIME=$(date +%s.%N)
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 --microbatches=8 --microbatch_size=4 \
   --seq_len=2048 --ops=attention=te --steps=1000 --warmup_steps=100 \
   --eval_every=100 --eval_batches=4 \
-  --checkpoint_dir=${JAXTITAN_ROOT}/checkpoints/maxtext-llama3.1-8b --checkpoint_every=250 \
+  --checkpoint_dir=${JAX_TITAN_ROOT}/checkpoints/maxtext-llama3.1-8b --checkpoint_every=250 \
   --run_dir=runs/maxtext-llama3.1-8b
-python -m jaxtitan.observability.summarize runs/maxtext-llama3.1-8b --wcp_steps 50
-python -m jaxtitan.observability.ettr runs/maxtext-llama3.1-8b --wcp_steps 50
+python -m jax_titan.observability.summarize runs/maxtext-llama3.1-8b --wcp_steps 50
+python -m jax_titan.observability.ettr runs/maxtext-llama3.1-8b --wcp_steps 50
 ```
 
 Add `--init_from=<converted checkpoint>` to start from Meta's weights instead
@@ -24,7 +24,7 @@ has the conversion).
 zero-bubble H1 schedule, 8 microbatches of 4 sequences of 2,048 tokens
 (65,536 tokens per step), data parallelism inside each stage with gradients
 all-reduced in every microbatch's backward pass. Attention is TE's fused
-attention (AITER/CK FMHA) through `jaxtitan.ops`; everything else is
+attention (AITER/CK FMHA) through `jax_titan.ops`; everything else is
 MaxText's code in native JAX. AdamW (3e-4 after 100 warmup steps, cosine
 decay to 10%), one gradient norm over both stages clipped at 1.0, bf16
 compute with fp32 weights and optimizer state, full rematerialization.

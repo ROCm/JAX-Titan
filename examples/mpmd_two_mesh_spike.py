@@ -16,7 +16,7 @@ import re
 import sys
 import time
 
-from jaxtitan import paths
+from jax_titan import paths
 
 
 def parse_args():
@@ -39,7 +39,7 @@ def main():
   if args.platform == "cpu":
     jax.config.update("jax_num_cpu_devices", 8)
 
-  import jaxtitan  # noqa: F401  pylint: disable=g-import-not-at-top,unused-import
+  import jax_titan  # noqa: F401  pylint: disable=g-import-not-at-top,unused-import
   from shardy.integrations.python.jax import mpmd  # pylint: disable=g-import-not-at-top
 
   devices = jax.devices()

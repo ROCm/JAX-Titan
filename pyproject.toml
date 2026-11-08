@@ -25,12 +25,12 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["chex", "pytest"]
-# Figures of training runs (jaxtitan.observability.plot).
+# Figures of training runs (jax_titan.observability.plot).
 plots = ["matplotlib>=3.8"]
 # The `triton` and `gluon` operator providers. JAX-Triton itself comes from the
 # third_party/jax-triton submodule; see docs/getting_started.md.
 triton = ["triton>=3.7"]
-# MaxText models (jaxtitan.models.adapters.maxtext). The maxtext package
+# MaxText models (jax_titan.models.adapters.maxtext). The maxtext package
 # declares no dependencies; these are what its model code imports.
 maxtext = [
     "maxtext==0.2.5",
@@ -51,7 +51,7 @@ maxtext = [
     "tokamax>=0.0.14,!=0.1.0",
     "transformers>=5.8.0",
 ]
-# MaxDiffusion FLUX.1 (jaxtitan.models.adapters.maxdiffusion): what its model
+# MaxDiffusion FLUX.1 (jax_titan.models.adapters.maxdiffusion): what its model
 # code imports. MaxDiffusion itself comes from a patched checkout; see
 # docs/getting_started.md.
 maxdiffusion = [
@@ -67,12 +67,12 @@ maxdiffusion = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "jaxtitan.__version__"}
+version = {attr = "jax_titan.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["jaxtitan*"]
+include = ["jax_titan*"]
 
 [tool.setuptools.package-data]
 # Collective times measured with scripts/bench_collectives.sh (docs/planning.md).
-"jaxtitan.planning" = ["data/*.json"]
+"jax_titan.planning" = ["data/*.json"]

@@ -6,7 +6,7 @@ import numpy as np
 import optax
 from shardy.integrations.python.jax import mpmd
 
-from jaxtitan import mpmd as jt_mpmd
+from jax_titan import mpmd as jt_mpmd
 
 
 def test_clipped_update_matches_optax_clip():

@@ -5,9 +5,9 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-NAME=${NAME:-${USER}_therock-10.1_jaxtitan}
+NAME=${NAME:-${USER}_therock-10.1_jax_titan}
 IMAGE=${IMAGE:-ghcr.io/rocm/jax-base-ubu24.therock-10.1:latest}
-# Mount the repo's parent so sibling checkouts (maxtext) and .jaxtitan are visible.
+# Mount the repo's parent so sibling checkouts (maxtext) and .jax_titan are visible.
 WORKSPACE=${WORKSPACE:-$(dirname "${REPO}")}
 VIDEO_GID=$(getent group video | cut -d: -f3)
 RENDER_GID=$(getent group render | cut -d: -f3)

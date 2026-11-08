@@ -4,7 +4,7 @@ import subprocess
 import sys
 import textwrap
 
-from jaxtitan.observability import watchdog
+from jax_titan.observability import watchdog
 
 
 def _run(code):
@@ -15,7 +15,7 @@ def _run(code):
 def test_exits_when_a_step_hangs():
   result = _run("""
       import time
-      from jaxtitan.observability.watchdog import StepWatchdog
+      from jax_titan.observability.watchdog import StepWatchdog
       watchdog = StepWatchdog(0.5, poll_s=0.05)
       watchdog.start(0)
       time.sleep(30)
@@ -27,7 +27,7 @@ def test_exits_when_a_step_hangs():
 def test_later_steps_get_a_multiple_of_the_median():
   result = _run("""
       import time
-      from jaxtitan.observability.watchdog import StepWatchdog
+      from jax_titan.observability.watchdog import StepWatchdog
       watchdog = StepWatchdog(0.5, poll_s=0.05)
       for step in range(5):
         watchdog.start(step)

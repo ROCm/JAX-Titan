@@ -2,17 +2,17 @@
 
 JAX-Titan runs in a TheRock ROCm container with JAX built from source, because
 the stock jaxlib cannot compile Shardy MPMD programs without Pathways. All
-build trees, the venv, data and logs live in `JAXTITAN_ROOT`, which defaults to
-`.jaxtitan` next to this repository.
+build trees, the venv, data and logs live in `JAX_TITAN_ROOT`, which defaults to
+`.jax_titan` next to this repository.
 
 ## 1. Container
 
 On the host:
 
 ```bash
-scripts/container.sh     # starts ${USER}_therock-10.1_jaxtitan from
+scripts/container.sh     # starts ${USER}_therock-10.1_jax_titan from
                          # ghcr.io/rocm/jax-base-ubu24.therock-10.1
-docker exec -it -u ${USER} ${USER}_therock-10.1_jaxtitan bash
+docker exec -it -u ${USER} ${USER}_therock-10.1_jax_titan bash
 ```
 
 The container mounts the repository's parent directory at the same path and
@@ -20,7 +20,7 @@ runs as your uid, so files keep their host owner.
 
 ## 2. Sources
 
-Create worktrees in `${JAXTITAN_ROOT}/src` and apply the patches from
+Create worktrees in `${JAX_TITAN_ROOT}/src` and apply the patches from
 `third_party/patches`:
 
 | Tree | Revision | Patch |
@@ -64,13 +64,13 @@ the TheRock 10.0 tarball for the build. Runs use the container's ROCm 10.1.
 ## 4. Python environment
 
 ```bash
-python3 -m venv --system-site-packages ${JAXTITAN_ROOT}/venv
-source ${JAXTITAN_ROOT}/venv/bin/activate
-D=${JAXTITAN_ROOT}/src/jax/dist
+python3 -m venv --system-site-packages ${JAX_TITAN_ROOT}/venv
+source ${JAX_TITAN_ROOT}/venv/bin/activate
+D=${JAX_TITAN_ROOT}/src/jax/dist
 pip install $D/jax-*.whl $D/jaxlib-*.whl
 pip install --no-deps $D/jax_rocm10_plugin-*.whl $D/jax_rocm10_pjrt-*.whl
 pip install optax tiktoken pyarrow jaxtyping absl-py immutabledict typing_extensions chex
-pip install --no-deps -e ${JAXTITAN_ROOT}/src/shardy/shardy/integrations/python/jax/mpmd
+pip install --no-deps -e ${JAX_TITAN_ROOT}/src/shardy/shardy/integrations/python/jax/mpmd
 # Optional, for TE operators: the ROCm/maxtext nightly TE wheel of 2026-11-02
 # (TE 199f548960fa). It pins jax==0.12.0; --no-deps keeps the jax built above.
 pip install --no-deps "https://github.com/ROCm/maxtext/releases/download/te-rocm-wheels-2026-11-02-199f548960fa/transformer_engine-2.20.0.dev0%2B199f54896-1.mi355-cp312-cp312-linux_x86_64.whl"
@@ -102,7 +102,7 @@ its own requirements (PyTorch, TensorFlow and libtpu), then the
 `maxdiffusion` extra:
 
 ```bash
-M=${JAXTITAN_ROOT}/src/maxdiffusion
+M=${JAX_TITAN_ROOT}/src/maxdiffusion
 git clone https://github.com/AI-Hypercomputer/maxdiffusion $M
 git -C $M checkout 821afc364ac1889c1039112843f4f7a17c1bef7b
 git -C $M apply $PWD/third_party/patches/maxdiffusion-*.patch
@@ -118,7 +118,7 @@ The node is shared, so check it is idle on the host first:
 
 ```bash
 # One-time data preparation (CPU only).
-python -m jaxtitan.data.text
+python -m jax_titan.data.text
 
 # Two-stage MLP step on two 4-GPU meshes, checked against jax.jit.
 python examples/mpmd_two_mesh_spike.py --platform=rocm
@@ -140,32 +140,32 @@ python -m pytest tests/
 # Operator providers against native JAX on MI355X: outputs and gradients, on one
 # GPU, under vmap, sharded, inside shard_map and inside an MPMD step, plus
 # timings. Run TE and JAX-AITER in separate processes (see docs/pipelines.md).
-python -m jaxtitan.ops.conformance --providers=te,te_mxfp8,te_fp8
-python -m jaxtitan.ops.conformance --providers=aiter --modes=bench
-python -m jaxtitan.ops.conformance --providers=triton,gluon --modes=single,sharded,manual,mpmd,bench
+python -m jax_titan.ops.conformance --providers=te,te_mxfp8,te_fp8
+python -m jax_titan.ops.conformance --providers=aiter --modes=bench
+python -m jax_titan.ops.conformance --providers=triton,gluon --modes=single,sharded,manual,mpmd,bench
 
 # Llama 3.1 8B, 2 stages x 4 MI355X, zero-bubble schedule, WikiText-103.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 
 # The same with FSDP inside each stage, 17 and 15 layers per stage, and a
 # checkpoint every 50 steps; rerunning it resumes from the latest checkpoint.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=llama3.1-8b --num_stages=2 --stage_fsdp --stage_layers=17,15 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100 \
-  --checkpoint_dir=${JAXTITAN_ROOT}/checkpoints/llama8b --checkpoint_every=50
+  --checkpoint_dir=${JAX_TITAN_ROOT}/checkpoints/llama8b --checkpoint_every=50
 
 # The same model, weights and batches without the pipeline: one jax.jit
 # program on all 8 GPUs, with replicated (dp) or sharded (fsdp) parameters.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=llama3.1-8b --parallel=dp \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 
 # MaxText's Llama 3.1 8B, built from MaxText's layers (the maxtext extra), on
 # the same data and pipeline. Gradients are reduced per microbatch.
-# --ops=attention=te or aiter routes MaxText's attention through jaxtitan.ops.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+# --ops=attention=te or aiter routes MaxText's attention through jax_titan.ops.
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=100
 
@@ -173,43 +173,43 @@ XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
 # MaxText's converter (needs a Hugging Face token with access to the model, or
 # --hf_model_path to a local copy), then start from the converted parameters.
 HF_AUTH_TOKEN=$HF_TOKEN python -m maxtext.checkpoint_conversion.to_maxtext \
-  ${JAXTITAN_ROOT}/src/maxtext/src/maxtext/configs/base.yml model_name=llama3.1-8b \
-  base_output_directory=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf hardware=cpu \
+  ${JAX_TITAN_ROOT}/src/maxtext/src/maxtext/configs/base.yml model_name=llama3.1-8b \
+  base_output_directory=${JAX_TITAN_ROOT}/checkpoints/llama3.1-8b-hf hardware=cpu \
   skip_jax_distributed_system=True scan_layers=True --lazy_load_tensors=True
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 --ops=attention=te \
-  --init_from=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf/0/items --steps=100
+  --init_from=${JAX_TITAN_ROOT}/checkpoints/llama3.1-8b-hf/0/items --steps=100
 
 # From pretrained weights: convert Hugging Face's Llama 3.1 8B once with
 # MaxText's converter (needs a Hugging Face token with access to the model, or
 # --hf_model_path to a local copy), then start from the converted parameters.
 HF_AUTH_TOKEN=$HF_TOKEN python -m maxtext.checkpoint_conversion.to_maxtext \
-  ${JAXTITAN_ROOT}/src/maxtext/src/maxtext/configs/base.yml model_name=llama3.1-8b \
-  base_output_directory=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf hardware=cpu \
+  ${JAX_TITAN_ROOT}/src/maxtext/src/maxtext/configs/base.yml model_name=llama3.1-8b \
+  base_output_directory=${JAX_TITAN_ROOT}/checkpoints/llama3.1-8b-hf hardware=cpu \
   skip_jax_distributed_system=True scan_layers=True --lazy_load_tensors=True
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 --ops=attention=te \
-  --init_from=${JAXTITAN_ROOT}/checkpoints/llama3.1-8b-hf/0/items --steps=100
+  --init_from=${JAX_TITAN_ROOT}/checkpoints/llama3.1-8b-hf/0/items --steps=100
 
 # Its no-pipeline reference for Gate 0: the same stages, weights and batches as
 # one data-parallel jax.jit program; then compare the first 10 steps' losses.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxtext:llama3.1-8b --parallel=dp \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=10 --run_dir=runs/mt_dp
 
 # Any run with --run_dir records the scaling book's training metrics (step
 # records and timeline, env.json, GPU power, validation with --eval_every) and
 # writes results.json; docs/metrics.md lists them and the tools that read them.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxtext:llama3.1-8b --num_stages=2 \
   --microbatches=8 --microbatch_size=4 --seq_len=2048 --steps=10 --run_dir=runs/mt_pp2
-python -m jaxtitan.observability.summarize --gate0 runs/mt_dp runs/mt_pp2 \
+python -m jax_titan.observability.summarize --gate0 runs/mt_dp runs/mt_pp2 \
   --gate0_steps 10 --gate0_rtol 2e-3
 
 # MaxDiffusion's FLUX.1-dev (12B) on synthetic 1024x1024 batches: noised
 # random latents and text embeddings, with the flow-matching loss. With 2
 # stages, the first holds 7.9B parameters and runs out of memory.
-XLA_FLAGS="$JAXTITAN_ROCM_XLA_FLAGS" python -m jaxtitan.trainer.train \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS" python -m jax_titan.trainer.train \
   --model=maxdiffusion:flux-dev --num_stages=4 \
   --microbatches=8 --microbatch_size=4 --steps=20 --lr=1e-5
 ```
@@ -237,9 +237,9 @@ and memory, on one GPU type or several side by side (CPU only;
 [planning.md](planning.md)):
 
 ```bash
-python -m jaxtitan.planning.budget --model=maxtext:llama3.1-70b --tokens=15e12 \
+python -m jax_titan.planning.budget --model=maxtext:llama3.1-70b --tokens=15e12 \
   --gpu=MI300X,MI325X,MI355X --gpus=2048 --tp=8 --fsdp
-python -m jaxtitan.planning.budget --model=maxtext:llama3.1-8b --tokens=2e12 \
+python -m jax_titan.planning.budget --model=maxtext:llama3.1-8b --tokens=2e12 \
   --gpu=MI325X --gpus=256 --seq_len=2048 --from_run=runs/mt_pp2
 ```
 
@@ -249,10 +249,10 @@ processes, remove your stale RCCL segments in `/dev/shm`, and remove the
 checkpoint directories you name with `--checkpoint`. Rerun it with `--yes` to
 apply. It never touches other users' processes or files.
 
-Prepare the training data once with `python -m jaxtitan.data.text`, which
-downloads WikiText-103 and writes Llama 3 token ids to `${JAXTITAN_ROOT}/data`.
+Prepare the training data once with `python -m jax_titan.data.text`, which
+downloads WikiText-103 and writes Llama 3 token ids to `${JAX_TITAN_ROOT}/data`.
 The tokenizer comes from a sibling MaxText checkout (override with
-`JAXTITAN_LLAMA3_TOKENIZER`).
+`JAX_TITAN_LLAMA3_TOKENIZER`).
 
 ## Results
 

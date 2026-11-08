@@ -74,9 +74,9 @@ hlo_dumps/
 events.out.tfevents.*
 .rocprofv3/
 
-# JAXTITAN_ROOT (builds, venv, data, logs, checkpoints) when it is inside the
+# JAX_TITAN_ROOT (builds, venv, data, logs, checkpoints) when it is inside the
 # repository, and MaxText's default output directory.
-/.jaxtitan/
+/.jax_titan/
 maxtext_output/
 
 # Benchmark scratch space.

@@ -1,6 +1,6 @@
 {
  "measured": {
-  "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/recipe2",
+  "run": "/home/cchen104/openxla/.jax_titan/logs/m4/recipe2",
   "attempts": 2,
   "steady_step_s": 1.8861404657363892,
   "tokens_per_step": 65536,

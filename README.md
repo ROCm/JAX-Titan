@@ -41,7 +41,7 @@ This is the target design; [What works](#what-works) lists what runs today.
   FP8/MXFP8 GEMMs, JAX-AITER flash attention, RMSNorm, SiLU-and-mul and GEMMs,
   AITER's Triton RMSNorm, SiLU-and-mul and RoPE and a gfx950 Gluon GEMM through
   JAX-Triton, with native JAX as the fallback, each checked by
-  `jaxtitan.ops.conformance` against native JAX on one GPU, sharded and inside
+  `jax_titan.ops.conformance` against native JAX on one GPU, sharded and inside
   a pipeline step.
 - Checks against single-mesh `jax.jit`: every schedule and layout matches it
   in loss and parameters, over 100 steps for 1F1B.
@@ -59,7 +59,7 @@ This is the target design; [What works](#what-works) lists what runs today.
   token, pipeline utilization, scaling efficiency and Gate 0, with figures of
   MFU, loss and power over time and a per-op, per-stage FLOPs and
   communication model ([docs/metrics.md](docs/metrics.md)).
-- A training budget planner (`python -m jaxtitan.planning.budget`). For a
+- A training budget planner (`python -m jax_titan.planning.budget`). For a
   dense or mixture-of-experts model, a token or time budget and one or more
   GPU types, it gives the run's FLOPs, time, GPU-hours, energy and cost:
   - GPU types: MI300X, MI325X, MI350X, MI355X, MI455X, H100, H200, B200 and
@@ -100,7 +100,7 @@ validation, checkpoints and a rehearsed restart, with its expected step time,
 loss curve, startup and checkpoint costs, energy and ETTR.
 
 ```python
-from jaxtitan import mpmd as jt_mpmd
+from jax_titan import mpmd as jt_mpmd
 from shardy.integrations.python.jax import mpmd
 
 topology = jt_mpmd.make_topology(num_stages=2)            # mesh0, mesh1
@@ -139,14 +139,14 @@ JAX-Titan on AMD's SPUR cluster.
 
 | Path | Contents |
 |---|---|
-| `src/jaxtitan/mpmd` | Topology, Shardy MPMD config and pipelined train steps |
-| `src/jaxtitan/parallel` | DP, FSDP and TP shardings from logical parameter axes |
-| `src/jaxtitan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText and MaxDiffusion models (`adapters/`) |
-| `src/jaxtitan/ops` | Semantic operators: per-op provider policy, native JAX, ROCm TE, JAX-AITER and JAX-Triton (Triton and Gluon) providers, and the conformance harness |
-| `src/jaxtitan/data` | Llama 3 tokenizer and pretokenized text sampling |
-| `src/jaxtitan/trainer` | Training entry point (`python -m jaxtitan.trainer.train`) and Orbax checkpoints |
-| `src/jaxtitan/observability` | Run records, metrics, figures, ETTR, ceilings, FLOPs model and per-GPU busy and idle time from profiler traces |
-| `src/jaxtitan/planning` | Training budget planner and performance model: model shapes, GPU specs, memory, RCCL and MORI collectives, step time, time left |
+| `src/jax_titan/mpmd` | Topology, Shardy MPMD config and pipelined train steps |
+| `src/jax_titan/parallel` | DP, FSDP and TP shardings from logical parameter axes |
+| `src/jax_titan/models` | Llama 3, with parameters grouped by pipeline stage, and stages of MaxText and MaxDiffusion models (`adapters/`) |
+| `src/jax_titan/ops` | Semantic operators: per-op provider policy, native JAX, ROCm TE, JAX-AITER and JAX-Triton (Triton and Gluon) providers, and the conformance harness |
+| `src/jax_titan/data` | Llama 3 tokenizer and pretokenized text sampling |
+| `src/jax_titan/trainer` | Training entry point (`python -m jax_titan.trainer.train`) and Orbax checkpoints |
+| `src/jax_titan/observability` | Run records, metrics, figures, ETTR, ceilings, FLOPs model and per-GPU busy and idle time from profiler traces |
+| `src/jax_titan/planning` | Training budget planner and performance model: model shapes, GPU specs, memory, RCCL and MORI collectives, step time, time left |
 | `examples/` | MPMD spike and parity checks |
 | `tests/` | CPU tests: schedules and layouts against `jax.jit`, checkpoint resume, MaxText and MaxDiffusion models |
 | `scripts/` | Container, build, environment, GPU-availability and post-run cleanup scripts |
@@ -163,7 +163,7 @@ JAX-Titan on AMD's SPUR cluster.
   at `821afc36`. JAX-Titan takes their model definitions, configs and
   checkpoint converters, and replaces their trainers, sharding and TPU kernels
   with its own.
-- Operator providers behind `jaxtitan.ops`, each checked against its native
+- Operator providers behind `jax_titan.ops`, each checked against its native
   JAX ops, in this order: ROCm Transformer Engine, from the nightly ROCm TE
   wheels that ROCm/maxtext publishes; JAX-AITER; JAX-Triton, for Triton and
   Gluon kernels including AITER's; and JAX-FlyDSL. JAX-AITER and JAX-Triton

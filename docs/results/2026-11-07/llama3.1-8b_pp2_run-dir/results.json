@@ -1,5 +1,5 @@
 {
- "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/run_head",
+ "run": "/home/cchen104/openxla/.jax_titan/logs/m4/run_head",
  "config": {
   "model": "llama3.1-8b",
   "model_overrides": "",
@@ -22,7 +22,7 @@
   "max_grad_norm": 1.0,
   "lr": 0.0003,
   "warmup_steps": 10,
-  "data": "/home/cchen104/openxla/.jaxtitan/data/wikitext103_train.llama3.bin"
+  "data": "/home/cchen104/openxla/.jax_titan/data/wikitext103_train.llama3.bin"
  },
  "devices": 8,
  "processes": 1,
@@ -210,7 +210,7 @@
   }
  },
  "exposed_communication": {
-  "xplane": "/home/cchen104/openxla/.jaxtitan/logs/m4/trace_head/plugins/profile/2026_11_07_12_51_22/smci355-ccs-aus-n15-13.xplane.pb",
+  "xplane": "/home/cchen104/openxla/.jax_titan/logs/m4/trace_head/plugins/profile/2026_11_07_12_51_22/smci355-ccs-aus-n15-13.xplane.pb",
   "window_s": 3.41638476,
   "steps": 2,
   "gpus": {

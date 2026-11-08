@@ -1,8 +1,8 @@
 import jax
 import optax
 
-from jaxtitan import parallel
-from jaxtitan.models import llama
+from jax_titan import parallel
+from jax_titan.models import llama
 
 P = jax.sharding.PartitionSpec
 

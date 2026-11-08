@@ -1,5 +1,5 @@
 {
- "run": "/home/cchen104/openxla/.jaxtitan/logs/m4/recipe2",
+ "run": "/home/cchen104/openxla/.jax_titan/logs/m4/recipe2",
  "config": {
   "model": "maxtext:llama3.1-8b",
   "model_overrides": "",
@@ -22,7 +22,7 @@
   "max_grad_norm": 1.0,
   "lr": 0.0003,
   "warmup_steps": 100,
-  "data": "/home/cchen104/openxla/.jaxtitan/data/wikitext103_train.llama3.bin"
+  "data": "/home/cchen104/openxla/.jax_titan/data/wikitext103_train.llama3.bin"
  },
  "devices": 8,
  "processes": 1,
