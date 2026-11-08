@@ -66,6 +66,11 @@ python -m jaxtitan.observability.plot runs/a runs/b --out figures
 # Training FLOPs and communication per op and per stage, and the balanced layer split.
 python -m jaxtitan.observability.flops --model=llama3.1-8b --num_stages=2 \
   --peak_tflops=1436 --busbw_gbs=160
+
+# Before a run: its time, GPU-hours, energy, memory and data-parallel communication on
+# other GPU types and counts, from a run's measurements (docs/planning.md).
+python -m jaxtitan.planning.budget --model=llama3.1-8b --tokens=1e12 \
+  --gpu=MI325X,MI355X --gpus=1024 --seq_len=2048 --from_run=runs/a
 ```
 
 The operator conformance bench (`jaxtitan.ops.conformance --modes=bench`) ends
