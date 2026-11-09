@@ -220,13 +220,15 @@ step, 2 stages of 4 GPUs, zero-bubble H1; per-step records are in
 | JAX-Titan's Llama | TE fused attention | per step | 1.310 s | 1.26 s (+4%) |
 
 MaxText's own trainer (`maxtext.trainers.pre_train.train`, the same MaxText
-0.2.5 checkout, synthetic data, the same 65,536 tokens per step, MaxText's
-attention, full remat):
+0.2.5 checkout, synthetic data, the same 65,536 tokens per step, full remat),
+with MaxText's attention (`attention=dot_product`) unless the row says TE:
 
 | MaxText trainer layout | Step | Tokens/s per GPU | Against JAX-Titan |
 |---|---|---|---|
 | FSDP over 8 GPUs | 0.723 s | 11.3k | `--parallel=dp` with MaxText's layers: 0.733 s |
 | Its pipeline: 2 stages x 4 GPUs (FSDP inside), 8 microbatches, 16 layers per stage | 1.763 s | 4.6k | MPMD pipeline of MaxText's layers: 2.098 s; of JAX-Titan's Llama: 1.502 s |
+| Its pipeline, 2026-11-09 | 1.755 s | 4.7k | |
+| Its pipeline with TE fused attention (`attention=cudnn_flash_te`), 2026-11-09 | 1.538 s | 5.3k | MPMD pipeline of JAX-Titan's Llama with TE, the same day: 1.278 s |
 
 - **Gate 0 passes on one node.** Against `--parallel=dp` with the same
   weights and batches, every pipeline stays within 8.7e-4 relative loss over
@@ -268,6 +270,17 @@ attention, full remat):
   once per step under the zero-bubble schedule. Per-step reduction or FSDP
   inside stages for adapter models is the next step for them. Without a
   pipeline the two trainers match (0.723 s and 0.733 s).
+- **With TE attention in both trainers, JAX-Titan's Llama pipeline is still
+  1.20x faster than MaxText's** (1.278 s against 1.538 s, both on 2026-11-09;
+  per-step records in [results/2026-11-09](results/2026-11-09)). TE speeds up
+  MaxText's pipeline 1.14x (1.755 s with its own attention the same day) and
+  JAX-Titan's 1.15x (1.502 s to 1.310 s on 2026-11-07), so the gap is the
+  pipeline, not the kernel. MaxText's TE path passes a dense padding mask
+  (`padding_causal`), for which TE compiles CK's group-mode backward kernels;
+  JAX-Titan's passes a causal mask. MaxText's config check requires
+  `max_segments_per_seq` with TE attention and packing (on by default); with
+  synthetic batches TE takes the dense layout with one segment per sequence,
+  so `max_segments_per_seq=1` changes nothing.
 
 ## Operator providers (2026-11-06 and 2026-11-07, 8x MI355X)
 
