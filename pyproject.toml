@@ -74,5 +74,6 @@ where = ["src"]
 include = ["jax_titan*"]
 
 [tool.setuptools.package-data]
-# Collective times measured with scripts/bench_collectives.sh (docs/planning.md).
-"jax_titan.planning" = ["data/*.json"]
+# Collective times measured with scripts/bench_collectives.sh, and the model config
+# index (docs/planning.md).
+"jax_titan.planning" = ["data/*.json", "data/models/*.json"]

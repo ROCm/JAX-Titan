@@ -5,28 +5,311 @@ FLOPs, time, GPU-hours, energy and cost, whether its layout fits in memory,
 and whether its data-parallel communication hides behind compute. Give it a
 model, a token or time budget, and one GPU type or several to compare.
 
+## Examples
+
+Each example below is the command and what it prints. They run on the CPU in
+a second or two, with the defaults: 40% MFU, 8,192-token sequences, 4.19M
+tokens per step, fp32 AdamW state and x2.00 memory overhead. After the first,
+the outputs show only the lines that example is about.
+
+### Tokens on one GPU type: the full report
+
 ```bash
-# Tokens to train on GPUs of one type: the full report.
 python -m jax_titan.planning.budget --model=llama3.1-8b --tokens=2e12 --gpu=MI325X --gpus=256
-
-# The same run on several GPU types: one row each.
-python -m jax_titan.planning.budget --model=maxtext:llama3.1-70b --tokens=15e12 \
-  --gpu=MI300X,MI325X,MI350X,MI355X,MI455X --gpus=2048 --tp=8 --fsdp
-
-# A time budget instead (--days or --gpu_hours), or a dataset and epochs.
-python -m jax_titan.planning.budget --model=hf:path/to/config.json --days=30 --gpu=MI355X --gpus=1024
-python -m jax_titan.planning.budget --model=llama3.1-8b --dataset_tokens=1e12 --epochs=3 ...
-
-# From what a JAX-Titan run measured: its achieved FLOP/s and power on the same GPU type
-# (its MFU carried over to other types), checkpoint and restart costs, and memory overhead.
-python -m jax_titan.planning.budget --model=maxtext:llama3.1-8b --tokens=2e12 --gpu=MI355X \
-  --gpus=512 --seq_len=2048 --from_run=runs/maxtext-llama3.1-8b
 ```
 
-`--model` is a JAX-Titan Llama flavor, `maxtext:<name>` or
-`hf:<config.json>` (Llama, Mistral, Mixtral, Qwen and DeepSeek-style
-decoders; multi-head latent attention is not modeled). `--json` writes
+```text
+--------- Model Overall Report ---------
+  model:                  llama3.1-8b
+  config source:          unsloth/Meta-Llama-3.1-8B@e9a141a2091e
+  parameters:             8.0B
+  FLOPs per token:        51.5 GFLOP at sequence 8192
+
+--------- System Budget Full Report ---------
+  GPUs:                   256 x AMD Instinct MI325X
+  peak:                   1307 TFLOP/s bf16 dense
+  MFU:                    40.0% (assumed)
+  HFU:                    52.5%
+  ETTR:                   0.997
+  checkpoint interval:    0.51 h (Daly)
+  tokens:                 2.000T (249 per active parameter)
+  model FLOPs:            1.029e+23
+  executed FLOPs:         1.352e+23
+  compute-optimal:        28.3B parameters on 0.57T tokens (Chinchilla, C = 6ND)
+  throughput:             2.60M tokens/s
+  throughput per GPU:     10160 tokens/s
+  wall time:              8.9 days
+  stepping time:          8.9 days
+  GPU-hours:              54.83k
+  energy:                 55 MWh at 100% of board power
+  wall time at 10% MFU:   35.7 days
+  wall time at 20% MFU:   17.8 days
+  wall time at 30% MFU:   11.9 days
+  wall time at 40% MFU:   8.9 days
+  wall time at 50% MFU:   7.1 days
+
+--------- Memory Report ---------
+  layout:                 tp 1, pp 1, dp 256, ep 1
+  floor per GPU:          131 GiB
+    training state:       120 GiB
+    activations:          3 GiB
+    logits:               8 GiB
+  overhead:               x2.00 (JAX-Titan Llama 3.1 8B pipeline)
+  peak per GPU:           261 GiB of 238 GiB HBM
+  fits:                   no (limit: 226 GiB, 95% of HBM)
+  layout that fits:       tp 1, pp 1, dp 256, ep 1, fsdp: 23 GiB
+  layout that fits:       tp 1, pp 2, dp 128, ep 1: 167 GiB
+  layout that fits:       tp 2, pp 1, dp 128, ep 1: 145 GiB
+  layout that fits:       tp 1, pp 2, dp 128, ep 1, fsdp: 49 GiB
+  layout that fits:       tp 2, pp 1, dp 128, ep 1, fsdp: 27 GiB
+  layout that fits:       tp 1, pp 4, dp 64, ep 1: 180 GiB
+
+--------- Data Parallel Report ---------
+  groups:                 32 scale-up domain(s) of 8 ranks
+  all_reduce:             32.1 GB, ring/simple at 333 GB/s bus (model)
+  time per step:          0.192 s against 1.613 s of compute per 4.19M-token step
+  overlap:                hidden if overlapped
+```
+
+The default layout, plain data parallelism, keeps the whole training state on
+every GPU (120 GiB for 8B parameters at 16 bytes each), so it does not fit;
+the report lists layouts that do. Add `--fsdp`, `--tp` or `--pp` to plan one.
+There is no XLA BF16 GEMM section: only the MI355X has a measured ceiling.
+
+### Several GPU types: one row each
+
+```bash
+python -m jax_titan.planning.budget --model=llama3.1-70b --tokens=15e12 \
+  --gpu=MI300X,MI325X,MI350X,MI355X,MI455X --gpus=2048 --tp=8 --fsdp
+```
+
+[Example: Llama 3.1 70B on 15T tokens, 2,048 GPUs](#example-llama-31-70b-on-15t-tokens-2048-gpus)
+explains the communication column.
+
+```text
+llama3.1-70b, 15.00T tokens on 2048 GPUs (bf16)
+GPU                     peak TF    MFU  tok/s/GPU         wall  GPU-hours     MWh         HBM GiB  DP comm/step  MFU source
+---------------------------------------------------------------------------------------------------------------------------
+AMD Instinct MI300X        1307  40.0%       1164    73.5 days      3.61M    2709       24/179 ok         0.89x  assumed
+AMD Instinct MI325X        1307  40.0%       1164    73.5 days      3.61M    3613       24/238 ok         0.89x  assumed
+AMD Instinct MI350X        2307  40.0%       2054    41.7 days      2.05M    2047       24/268 ok         1.57x  assumed
+AMD Instinct MI355X        2517  40.0%       2241    38.2 days      1.88M    2628       24/268 ok         1.71x  assumed
+AMD Instinct MI455X        5033  40.0%       4482    19.1 days    938.41k       -       24/402 ok         0.12x  assumed
+HBM: the layout's floor x overhead over the GPU's HBM; DP comm/step: the data-parallel collectives over the step's compute, at --comm_efficiency of the links' peak (above 1x stays exposed even when overlapped).
+```
+
+### A time budget instead of tokens
+
+`--days` (or `--gpu_hours`) gives the tokens the time buys.
+
+```bash
+python -m jax_titan.planning.budget --model=Qwen/Qwen3-235B-A22B --days=30 --gpu=MI355X \
+  --gpus=1024 --ep=8 --fsdp
+```
+
+```text
+--------- Model Overall Report ---------
+  model:                  qwen3-235b-a22b
+  config source:          Qwen/Qwen3-235B-A22B@8efa61729e24
+  parameters:             235.1B
+  active parameters:      22.2B
+  FLOPs per token:        167.3 GFLOP at sequence 8192
+
+--------- System Budget Full Report ---------
+  ...
+  tokens:                 15.876T (715 per active parameter)
+  ...
+  throughput per GPU:     6019 tokens/s
+  wall time:              30.0 days
+  ...
+  GPU-hours:              737.28k
+  ...
+
+--------- Memory Report ---------
+  layout:                 tp 1, pp 1, dp 1024, ep 8, fsdp
+  ...
+  peak per GPU:           17 GiB of 268 GiB HBM
+  fits:                   yes (limit: 255 GiB, 95% of HBM)
+  ...
+
+--------- Data Parallel Report ---------
+  groups:                 128 scale-up domain(s) of 8 ranks
+  all_gather:             72.8 GB, ring/simple at 354 GB/s bus (model)
+  all_gather:             72.8 GB, ring/simple at 354 GB/s bus (model)
+  reduce_scatter:         145.5 GB, ring/simple at 357 GB/s bus (model)
+  time per step:          0.819 s against 0.681 s of compute per 4.19M-token step
+  overlap:                exposed; hiding it takes 5.04M tokens per step
+```
+
+Without `--ep=8 --fsdp` every GPU would hold the whole 235B-parameter state
+(7,022 GiB) and nothing would fit. The 291 GB of FSDP traffic per step takes
+longer than the step's compute; `--batch_tokens` of 5.04M or more would hide it.
+
+### A dataset and epochs
+
+```bash
+python -m jax_titan.planning.budget --model=llama3.1-8b --dataset_tokens=1e12 --epochs=3 \
+  --gpu=MI355X --gpus=256 --fsdp
+```
+
+```text
+--------- System Budget Full Report ---------
+  ...
+  tokens:                 3.000T (374 per active parameter)
+  ...
+  throughput per GPU:     19558 tokens/s
+  wall time:              7.0 days
+  stepping time:          6.9 days
+  GPU-hours:              42.73k
+  energy:                 60 MWh at 100% of board power
+  ...
+```
+
+### A model downloaded from Hugging Face
+
+Planning needs only the model's `config.json`: download it (`hf download
+Qwen/Qwen3-14B config.json --local-dir path/to/Qwen3-14B`), or save the raw file
+from the model page's "Files and versions" tab into a directory. Pass the
+directory or the file; `hf:` in front is optional. The report names the model
+after the directory and gives the path as its source.
+
+```bash
+python -m jax_titan.planning.budget --model=path/to/Qwen3-14B --tokens=5e12 --gpu=MI355X \
+  --gpus=256 --fsdp
+```
+
+```text
+--------- Model Overall Report ---------
+  model:                  Qwen3-14B
+  config source:          path/to/Qwen3-14B/config.json
+  parameters:             14.8B
+  FLOPs per token:        94.0 GFLOP at sequence 8192
+
+--------- System Budget Full Report ---------
+  ...
+  tokens:                 5.000T (339 per active parameter)
+  ...
+  wall time:              21.2 days
+  ...
+  GPU-hours:              130.07k
+  ...
+
+--------- Memory Report ---------
+  ...
+  peak per GPU:           29 GiB of 268 GiB HBM
+  fits:                   yes (limit: 255 GiB, 95% of HBM)
+  ...
+```
+
+### From what a JAX-Titan run measured
+
+`--from_run` takes a JAX-Titan `--run_dir`, here the recorded
+[Llama 3.1 8B recipe](recipes/maxtext-llama3.1-8b.md) run: its achieved FLOP/s
+and power on the same GPU type (its MFU carried over to other types), its
+checkpoint and restart costs, and its memory overhead replace the defaults.
+
+```bash
+python -m jax_titan.planning.budget --model=llama3.1-8b --tokens=2e12 --gpu=MI355X --gpus=512 \
+  --seq_len=2048 --fsdp --from_run=docs/results/2026-11-07/maxtext-llama3.1-8b_recipe
+```
+
+```text
+--------- System Budget Full Report ---------
+  ...
+  MFU:                    8.1% (measured on AMD Instinct MI355X)
+  HFU:                    10.6%
+  ETTR:                   0.985
+  checkpoint interval:    1.46 h (Daly)
+  ...
+  throughput per GPU:     4351 tokens/s
+  wall time:              10.5 days
+  ...
+  GPU-hours:              129.62k
+  ...
+
+--------- XLA BF16 GEMM Report ---------
+  ...
+  MFU of the ceiling:     14%
+
+--------- Memory Report ---------
+  ...
+  overhead:               x2.83 (measured)
+  peak per GPU:           8 GiB of 268 GiB HBM
+  fits:                   yes (limit: 255 GiB, 95% of HBM)
+  ...
+```
+
+## Models
+
+`--model` takes any of these:
+
+- A model in the model config index, by its name or its Hugging Face
+  repository in any case: `llama3.1-70b`, `meta-llama/Llama-3.1-70B`,
+  `Qwen3-235B-A22B`.
+- A path to a model's `config.json` or the directory that holds it (`hf:` in
+  front is optional): a model you downloaded. The path is all it needs; nothing
+  has to be added to the index. A path that exists is read before any index
+  name.
+- `maxtext:<name>`: from the index when it has the name, otherwise from
+  MaxText's config, which needs MaxText installed.
+- A JAX-Titan Llama flavor, such as `llama3-test`.
+
+All of them read Hugging Face `config.json` fields: Llama, Mistral, Mixtral,
+Qwen and DeepSeek-style decoders, dense or mixture-of-experts. Multi-head
+latent attention and sliding-window attention are not modeled. The report's
+`config source` line says where the shape came from, and `--json` writes
 everything the report prints.
+
+### The model config index
+
+The index, `src/jax_titan/planning/data/models/model_config_index.json`, keeps
+the `config.json` fields planning reads, per model, with the repository and
+commit they were read from
+(`https://huggingface.co/<hf_config_source>/blob/<hf_config_revision>/config.json`).
+Meta's repositories are gated, so the Llama entries come from ungated copies
+(`mirror_of` names the original); they match MaxText's copies of Meta's
+configs.
+
+```bash
+python -m jax_titan.planning.model_index
+```
+
+```text
+llama3.1-405b      hugging-quants/Meta-Llama-3.1-405B-BNB-NF4-BF16@1f2a5deea6dc (mirror of meta-llama/Llama-3.1-405B)
+llama3.1-70b       unsloth/Meta-Llama-3.1-70B@1b7306651142 (mirror of meta-llama/Llama-3.1-70B)
+llama3.1-8b        unsloth/Meta-Llama-3.1-8B@e9a141a2091e (mirror of meta-llama/Llama-3.1-8B)
+llama3.3-70b       unsloth/Llama-3.3-70B-Instruct@99cd0d2c829e (mirror of meta-llama/Llama-3.3-70B-Instruct)
+mistral-7b         mistralai/Mistral-7B-v0.1@27d67f1b5f57
+mixtral-8x22b      mistralai/Mixtral-8x22B-v0.1@e1cd34ff1747
+mixtral-8x7b       mistralai/Mixtral-8x7B-v0.1@fc7ac94680e3
+qwen3-0.6b         Qwen/Qwen3-0.6B@c1899de289a0
+qwen3-1.7b         Qwen/Qwen3-1.7B@70d244cc86cc
+qwen3-14b          Qwen/Qwen3-14B@40c069824f42
+qwen3-235b-a22b    Qwen/Qwen3-235B-A22B@8efa61729e24
+qwen3-30b-a3b      Qwen/Qwen3-30B-A3B@ad44e777bcd1
+qwen3-32b          Qwen/Qwen3-32B@9216db5781bf
+qwen3-4b           Qwen/Qwen3-4B@1cfa9a720891
+qwen3-8b           Qwen/Qwen3-8B@b968826d9c46
+```
+
+### Adding a model to the index
+
+Add a model when others should plan it by name, pinned to one commit. `--add
+NAME REPO` takes a Hugging Face repository, not a local path: it reads that
+repository's `config.json` from the Hub at its latest commit (or
+`--revision`), keeps the fields planning reads, and records the repository and
+commit. For a gated repository, set `HF_TOKEN`, or add an ungated copy with
+`--mirror_of <original>`. Commit the changed index.
+
+```bash
+python -m jax_titan.planning.model_index --add qwen3-14b-base Qwen/Qwen3-14B-Base
+```
+
+```text
+qwen3-14b-base: Qwen/Qwen3-14B-Base@0b0bd3732e2c374d483664439ea334928b65f304
+```
+
+Then `--model=qwen3-14b-base` and `--model=Qwen/Qwen3-14B-Base` both work.
 
 ## From a first estimate to a calibrated prediction
 
