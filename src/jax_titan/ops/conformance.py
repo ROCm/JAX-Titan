@@ -30,7 +30,7 @@ from collections.abc import Callable
 import numpy as np
 
 # Relative error allowed per quantized GEMM; ops multiply it by their GEMM count.
-TOLERANCE = {"te_mxfp8": 0.06, "te_fp8": 0.06, "aiter_mxfp4": 0.25}
+TOLERANCE = {"te_mxfp8": 0.06, "te_fp8": 0.06, "xla_fp8": 0.06, "aiter_mxfp4": 0.25}
 GEMMS = {"swiglu": 2}
 MODES = ("single", "vmap", "sharded", "manual", "mpmd", "bench")
 

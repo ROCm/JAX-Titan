@@ -7,8 +7,9 @@ Each op runs on the provider the current policy prefers (see
 
 Built-in providers: `native`; `te`, `te_mxfp8` and `te_fp8` (ROCm Transformer
 Engine); `aiter` and `aiter_mxfp4` (JAX-AITER); `triton` (AITER's Triton
-kernels) and `gluon` (gfx950 Gluon GEMMs), both through JAX-Triton. Packages
-can add more under the `jax_titan.ops_providers` entry-point group.
+kernels) and `gluon` (gfx950 Gluon GEMMs), both through JAX-Triton; `xla_fp8`
+(scalar FP8 GEMMs compiled by XLA). Packages can add more under the
+`jax_titan.ops_providers` entry-point group.
 """
 
 import importlib
@@ -51,6 +52,7 @@ for _name, _module, _factory in (
     ("aiter_mxfp4", "jax_titan.ops.providers.aiter", "mxfp4"),
     ("triton", "jax_titan.ops.providers.triton", "aiter"),
     ("gluon", "jax_titan.ops.providers.triton", "gluon"),
+    ("xla_fp8", "jax_titan.ops.providers.xla", "fp8"),
 ):
   register(Provider(_name, _lazy(_module, _factory)))
 
