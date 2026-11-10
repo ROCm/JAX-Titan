@@ -274,6 +274,7 @@ def _print_step(r: dict) -> None:
 
 
 def main(argv=None):
+  models.cpu_only()
   parser = argparse.ArgumentParser(description=__doc__,
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--model", default="")

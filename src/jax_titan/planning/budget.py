@@ -53,6 +53,8 @@ CHINCHILLA_TOKENS_PER_PARAM = 20
 RECIPE_W_CP_S = 2.4
 RECIPE_RESTART_S = 175.0
 MEASURED_MEMORY_OVERHEAD = 2.0
+# A layout fits when its peak stays under this fraction of HBM.
+HBM_MARGIN = 0.95
 # Llama 3 (arXiv:2407.21783): 419 unexpected interruptions in 54 days on 16,384 GPUs.
 LLAMA3_FAILURES_PER_1000_GPU_DAYS = 1000 * 419 / (54 * 16384)
 # BF16 GEMM rates XLA reaches (jax_titan.observability.ceilings; docs/metrics.md): an upper
@@ -106,8 +108,8 @@ def estimate(model: models.Model, gpu: gpus_lib.GPU, gpus: int, *, tokens: float
   # Chinchilla's C = 6ND, with N the parameters a token uses.
   n_opt = math.sqrt(6 * model.params(active=True) * tokens / (6 * CHINCHILLA_TOKENS_PER_PARAM))
   out = {
-      "model": model.name, "params": model.params(), "active_params": model.params(active=True),
-      "gpu": gpu.name, "gpus": gpus, "precision": precision, "peak_tflops": peak / 1e12,
+      "model": model.name, "model_source": model.source, "params": model.params(),
+      "active_params": model.params(active=True), "gpu": gpu.name, "gpus": gpus, "precision": precision, "peak_tflops": peak / 1e12,
       "seq_len": seq_len, "tokens": tokens, "mfu": mfu,
       "hfu": mfu * executed_per_token / per_token, "ettr": ettr,
       "model_flops_per_token": per_token, "executed_flops_per_token": executed_per_token,
@@ -126,7 +128,7 @@ def estimate(model: models.Model, gpu: gpus_lib.GPU, gpus: int, *, tokens: float
 
 
 def layouts_that_fit(model: models.Model, gpu: gpus_lib.GPU, gpus: int, base: memory.Layout,
-                     overhead: float = MEASURED_MEMORY_OVERHEAD, margin: float = 0.95,
+                     overhead: float = MEASURED_MEMORY_OVERHEAD, margin: float = HBM_MARGIN,
                      limit: int = 6) -> list[dict]:
   """Layouts whose memory (floor x overhead) fits margin x HBM, fewest model-parallel
   ways first."""
@@ -247,11 +249,11 @@ def plan(model: models.Model, gpu: gpus_lib.GPU, args, run: dict | None = None) 
   r["memory"] = {**mem, "layout": dataclasses.asdict(layout), "overhead": overhead,
                  "overhead_source": overhead_source,
                  "with_overhead_bytes": mem["total_bytes"] * overhead, "hbm_bytes": hbm,
-                 "fits": mem["total_bytes"] * overhead <= 0.95 * hbm if hbm else None}
+                 "fits": mem["total_bytes"] * overhead <= HBM_MARGIN * hbm if hbm else None}
   r["layouts_that_fit"] = layouts_that_fit(model, gpu, args.gpus, layout, overhead)
   if not r["layouts_that_fit"] and hbm:
     state = model.params() * (layout.weight_bytes + layout.grad_bytes + layout.optimizer_bytes)
-    r["min_gpus_for_state"] = math.ceil(state * overhead / (0.95 * hbm))
+    r["min_gpus_for_state"] = math.ceil(state * overhead / (HBM_MARGIN * hbm))
 
   if dp > 1 and gpu.scaleup_gbs:
     k = comms.ranks_per_domain(args.gpus, dp, args.tp, gpu.scaleup_gpus)
@@ -280,60 +282,96 @@ def plan(model: models.Model, gpu: gpus_lib.GPU, args, run: dict | None = None) 
   return r
 
 
+def _section(title: str) -> None:
+  print(f"\n--------- {title} ---------")
+
+
+def _metric(label: str, value: str) -> None:
+  print(f"  {label + ':':<24}{value}")
+
+
+def _layout(tp, pp, dp, ep, fsdp) -> str:
+  return f"tp {tp}, pp {pp}, dp {dp}, ep {ep}{', fsdp' if fsdp else ''}"
+
+
 def report(r: dict, args) -> None:
-  model_line = (f"{r['model']}: {r['params'] / 1e9:.1f}B parameters"
-                + (f" ({r['active_params'] / 1e9:.1f}B active)"
-                   if r["active_params"] != r["params"] else "")
-                + f", {r['model_flops_per_token'] / 1e9:.1f} GFLOP per token at sequence "
-                f"{r['seq_len']}")
-  print(model_line)
-  print(f"{r['gpus']} x {r['gpu']} at {r['peak_tflops']:.0f} TFLOP/s {r['precision']} dense, "
-        f"MFU {100 * r['mfu']:.1f}% ({r['mfu_source']}; HFU {100 * r['hfu']:.1f}%), "
-        f"ETTR {r['ettr']:.3f}"
-        + (f" (Daly interval {r['checkpoint_interval_h']:.2f} h)"
-           if "checkpoint_interval_h" in r else ""))
-  print(f"tokens {r['tokens'] / 1e12:.3f}T ({r['tokens_per_param']:.0f} per active parameter): "
-        f"model {r['model_flops']:.3e} FLOPs, executed {r['executed_flops']:.3e}")
-  print(f"throughput {_count(r['tokens_per_s'])} tokens/s ({r['tokens_per_s_per_gpu']:.0f} "
-        f"per GPU); {_duration(r['wall_days'])} wall ({_duration(r['compute_days'])} stepping), "
-        f"{_count(r['gpu_hours'])} GPU-hours"
-        + (f", {r['energy_mwh']:.0f} MWh at {100 * r['power_fraction']:.0f}% of board power"
-           if "energy_mwh" in r else "")
-        + (f", ${r['cost_usd'] / 1e6:.2f}M" if "cost_usd" in r else ""))
-  print("wall time at MFU " + ", ".join(f"{100 * m:.0f}%: {_duration(d)}"
-                                        for m, d in r["wall_days_at_mfu"].items()))
+  """The budget on one GPU type, one metric per line."""
+  _section("Model Overall Report")
+  _metric("model", r["model"])
+  if r.get("model_source"):
+    _metric("config source", r["model_source"])
+  _metric("parameters", f"{r['params'] / 1e9:.1f}B")
+  if r["active_params"] != r["params"]:
+    _metric("active parameters", f"{r['active_params'] / 1e9:.1f}B")
+  _metric("FLOPs per token",
+          f"{r['model_flops_per_token'] / 1e9:.1f} GFLOP at sequence {r['seq_len']}")
+
+  _section("System Budget Full Report")
+  _metric("GPUs", f"{r['gpus']} x {r['gpu']}")
+  _metric("peak", f"{r['peak_tflops']:.0f} TFLOP/s {r['precision']} dense")
+  _metric("MFU", f"{100 * r['mfu']:.1f}% ({r['mfu_source']})")
+  _metric("HFU", f"{100 * r['hfu']:.1f}%")
+  _metric("ETTR", f"{r['ettr']:.3f}")
+  if "checkpoint_interval_h" in r:
+    _metric("checkpoint interval", f"{r['checkpoint_interval_h']:.2f} h (Daly)")
+  _metric("tokens",
+          f"{r['tokens'] / 1e12:.3f}T ({r['tokens_per_param']:.0f} per active parameter)")
+  _metric("model FLOPs", f"{r['model_flops']:.3e}")
+  _metric("executed FLOPs", f"{r['executed_flops']:.3e}")
+  co = r["compute_optimal"]
+  _metric("compute-optimal", f"{co['params'] / 1e9:.1f}B parameters on "
+          f"{co['tokens'] / 1e12:.2f}T tokens (Chinchilla, C = 6ND)")
+  _metric("throughput", f"{_count(r['tokens_per_s'])} tokens/s")
+  _metric("throughput per GPU", f"{r['tokens_per_s_per_gpu']:.0f} tokens/s")
+  _metric("wall time", _duration(r["wall_days"]))
+  _metric("stepping time", _duration(r["compute_days"]))
+  _metric("GPU-hours", _count(r["gpu_hours"]))
+  if "energy_mwh" in r:
+    _metric("energy",
+            f"{r['energy_mwh']:.0f} MWh at {100 * r['power_fraction']:.0f}% of board power")
+  if "cost_usd" in r:
+    _metric("cost", f"${r['cost_usd'] / 1e6:.2f}M")
+  for mfu, days in r["wall_days_at_mfu"].items():
+    _metric(f"wall time at {100 * mfu:.0f}% MFU", _duration(days))
+
   if "measured_gemm_tflops" in r:
     g = r["measured_gemm_tflops"]
-    print(f"XLA reaches {g:.0f} TFLOP/s of BF16 GEMM on {r['gpu']} "
-          f"({100 * g / r['peak_tflops']:.0f}% of peak): MFU {100 * r['mfu']:.1f}% is "
-          f"{100 * r['mfu'] * r['peak_tflops'] / g:.0f}% of that ceiling")
-  co = r["compute_optimal"]
-  print(f"compute-optimal for this compute (Chinchilla, C = 6ND): {co['params'] / 1e9:.1f}B "
-        f"parameters on {co['tokens'] / 1e12:.2f}T tokens")
+    _section("XLA BF16 GEMM Report")
+    _metric("GEMM ceiling",
+            f"{g:.0f} TFLOP/s on {r['gpu']} ({100 * g / r['peak_tflops']:.0f}% of peak)")
+    _metric("MFU of the ceiling", f"{100 * r['mfu'] * r['peak_tflops'] / g:.0f}%")
+
   m, lo = r["memory"], r["memory"]["layout"]
-  print(f"memory per GPU (tp {lo['tensor_parallel']}, pp {lo['pipeline_stages']}, dp "
-        f"{lo['data_parallel']}, ep {lo['expert_parallel']}{', fsdp' if lo['fsdp'] else ''}): "
-        f"floor {m['total_bytes'] / 2**30:.0f} GiB (state {m['state_bytes'] / 2**30:.0f}, "
-        f"activations {m['activation_bytes'] / 2**30:.0f}, logits "
-        f"{m['logits_bytes'] / 2**30:.0f}), x{m['overhead']:.2f} overhead "
-        f"({m['overhead_source']}) {m['with_overhead_bytes'] / 2**30:.0f} GiB of "
-        f"{m['hbm_bytes'] / 1e9:.0f} GB: "
-        + ("fits" if m["fits"] else "does not fit" if m["fits"] is not None else "unknown HBM"))
+  _section("Memory Report")
+  _metric("layout", _layout(lo["tensor_parallel"], lo["pipeline_stages"], lo["data_parallel"],
+                            lo["expert_parallel"], lo["fsdp"]))
+  _metric("floor per GPU", f"{m['total_bytes'] / 2**30:.0f} GiB")
+  _metric("  training state", f"{m['state_bytes'] / 2**30:.0f} GiB")
+  _metric("  activations", f"{m['activation_bytes'] / 2**30:.0f} GiB")
+  _metric("  logits", f"{m['logits_bytes'] / 2**30:.0f} GiB")
+  _metric("overhead", f"x{m['overhead']:.2f} ({m['overhead_source']})")
+  _metric("peak per GPU",
+          f"{m['with_overhead_bytes'] / 2**30:.0f} GiB of {m['hbm_bytes'] / 2**30:.0f} GiB HBM")
+  _metric("fits", "unknown HBM" if m["fits"] is None else ("yes" if m["fits"] else "no")
+          + f" (limit: {HBM_MARGIN * m['hbm_bytes'] / 2**30:.0f} GiB, {100 * HBM_MARGIN:.0f}% of HBM)")
   for f in r["layouts_that_fit"]:
-    print(f"  fits: tp {f['tp']}, pp {f['pp']}, dp {f['dp']}, ep {f['ep']}"
-          f"{', fsdp' if f['fsdp'] else ''}: {f['gib_per_gpu']:.0f} GiB")
+    _metric("layout that fits",
+            f"{_layout(f['tp'], f['pp'], f['dp'], f['ep'], f['fsdp'])}: {f['gib_per_gpu']:.0f} GiB")
   if "min_gpus_for_state" in r:
-    print(f"  no layout of {r['gpus']} GPUs fits; the training state alone needs at least "
-          f"{r['min_gpus_for_state']} GPUs (sharded over all of them, x{m['overhead']:.2f})")
+    _metric("fewest GPUs", f"{r['min_gpus_for_state']} for the training state alone (sharded "
+            f"over all of them, x{m['overhead']:.2f}); no layout of {r['gpus']} fits")
+
   c = r.get("data_parallel")
   if c:
-    parts = ", ".join(f"{x['op']} {x['bytes'] / 1e9:.1f} GB {x['algorithm']} at "
-                      f"{x['busbw_gbs']:.0f} GB/s bus ({x['source']})" for x in c["collectives"])
-    print(f"data parallel over {c['domains']} scale-up domain(s) of {c['ranks_per_domain']} "
-          f"ranks per step: {parts}; {c['total_s']:.3f} s against {c['step_compute_s']:.3f} s "
-          f"of compute per {_count(args.batch_tokens)}-token step: "
-          + ("hidden if overlapped" if c["total_s"] <= c["step_compute_s"] else
-             f"exposed; hiding it takes {_count(c['hiding_batch_tokens'])} tokens per step"))
+    _section("Data Parallel Report")
+    _metric("groups", f"{c['domains']} scale-up domain(s) of {c['ranks_per_domain']} ranks")
+    for x in c["collectives"]:
+      _metric(x["op"], f"{x['bytes'] / 1e9:.1f} GB, {x['algorithm']} at "
+              f"{x['busbw_gbs']:.0f} GB/s bus ({x['source']})")
+    _metric("time per step", f"{c['total_s']:.3f} s against {c['step_compute_s']:.3f} s of "
+            f"compute per {_count(args.batch_tokens)}-token step")
+    _metric("overlap", "hidden if overlapped" if c["total_s"] <= c["step_compute_s"] else
+            f"exposed; hiding it takes {_count(c['hiding_batch_tokens'])} tokens per step")
 
 
 def comparison(results: list[dict]) -> None:
@@ -359,6 +397,7 @@ def comparison(results: list[dict]) -> None:
 
 
 def main(argv=None):
+  models.cpu_only()
   parser = argparse.ArgumentParser(description=__doc__,
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("--model", required=True)

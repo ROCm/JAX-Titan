@@ -1,7 +1,9 @@
 """Decoder-only transformer shapes for training budgets, dense or mixture-of-experts.
 
-A `Model` comes from a JAX-Titan Llama flavor, a MaxText model (`maxtext:<name>`), a
-Hugging Face `config.json` (`hf:<path>`), or explicit dimensions. FLOPs follow
+A `Model` comes from the model config index (`data/models/model_config_index.json`: public
+Hugging Face config.json fields, by name or repository), a downloaded Hugging Face model
+(`hf:<config.json or its directory>`), a MaxText model (`maxtext:<name>`, from the index
+when it has the name), a JAX-Titan Llama flavor, or explicit dimensions. FLOPs follow
 `jax_titan.observability.flops`: two FLOPs per multiply-add, a training step costs three
 forward passes (a matmul's backward computes the activation and the weight gradient), and
 causal attention counts half of its scores. Attention is grouped-query; multi-head latent
@@ -10,7 +12,10 @@ attention (DeepSeek's MLA) is not modeled.
 
 import dataclasses
 import json
+import os
 import pathlib
+
+from jax_titan.planning import model_index
 
 # How much of the attention scores (QK^T and AV) a convention counts: JAX-Titan's causal
 # half, PaLM's and Megatron's full square, or none (the 6N of published compute figures).
@@ -33,6 +38,7 @@ class Model:
   shared_experts: int = 0  # experts every token uses, each `expert_mlp` wide
   moe_layers: int = 0  # how many of `layers` are MoE layers
   tied_embeddings: bool = False
+  source: str = ""  # where the shape came from: repository@commit, a path, or a config
 
   @property
   def dense_layers(self) -> int:
@@ -103,7 +109,14 @@ class Model:
 def from_llama(cfg, name: str = "llama") -> Model:
   """From a `jax_titan.models.llama.LlamaConfig`."""
   return Model(name, cfg.vocab_size, cfg.emb_dim, cfg.num_layers, cfg.num_query_heads,
-               cfg.num_kv_heads, cfg.head_dim, cfg.mlp_dim)
+               cfg.num_kv_heads, cfg.head_dim, cfg.mlp_dim, source="jax_titan.models.llama")
+
+
+def cpu_only() -> None:
+  """Keeps JAX on the CPU; call before anything imports jax. Planning needs no GPU,
+  but reading a MaxText config counts devices, which otherwise starts JAX's GPU
+  backend: a context on every GPU and, by default, 75% of its memory."""
+  os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 
 def from_maxtext(model_name: str) -> Model:
@@ -128,16 +141,16 @@ def from_maxtext(model_name: str) -> Model:
       shared_experts=int(getattr(cfg, "shared_experts", 0) or 0) if moe else 0,
       moe_layers=moe_layers,
       tied_embeddings=bool(getattr(cfg, "logits_via_embedding", False)),
+      source=f"MaxText configs/models/{model_name}.yml",
   )
 
 
-def from_hf_config(path) -> Model:
-  """From a Hugging Face `config.json` of a Llama-, Mistral-, Mixtral-, Qwen- or
-  DeepSeek-style (without MLA) decoder."""
-  c = json.loads(pathlib.Path(path).read_text())
+def from_hf_dict(c: dict, name: str, source: str = "") -> Model:
+  """From the fields of a Hugging Face `config.json` of a Llama-, Mistral-, Mixtral-,
+  Qwen- or DeepSeek-style (without MLA) decoder."""
   c = c.get("text_config", c)
   if c.get("kv_lora_rank"):
-    raise NotImplementedError(f"{path} uses multi-head latent attention (kv_lora_rank)")
+    raise NotImplementedError(f"{name} uses multi-head latent attention (kv_lora_rank)")
   heads = c["num_attention_heads"]
   emb = c["hidden_size"]
   layers = c["num_hidden_layers"]
@@ -155,24 +168,66 @@ def from_hf_config(path) -> Model:
     # One shared expert of its own width (Qwen-MoE): count it in units of expert_mlp.
     shared = c["shared_expert_intermediate_size"] / expert_mlp
   return Model(
-      pathlib.Path(path).parent.name or str(path), c["vocab_size"], emb, layers, heads,
+      name, c["vocab_size"], emb, layers, heads,
       c.get("num_key_value_heads") or heads, c.get("head_dim") or emb // heads,
       c.get("intermediate_size") or 4 * emb,
       experts=experts, experts_per_token=c.get("num_experts_per_tok", 0) if experts else 0,
       expert_mlp=expert_mlp if experts else 0, shared_experts=shared,
       moe_layers=moe_layers, tied_embeddings=bool(c.get("tie_word_embeddings", False)),
+      source=source,
   )
 
 
+def from_hf_config(path) -> Model:
+  """From a downloaded model's `config.json`, or the directory that holds it."""
+  path = pathlib.Path(path)
+  if path.is_dir():
+    path = path / "config.json"
+  return from_hf_dict(json.loads(path.read_text()), path.parent.name or str(path),
+                      source=str(path))
+
+
+def lookup(name: str) -> str | None:
+  """The index entry for `name`, in any case: its key, or a Hugging Face repository
+  (with or without the owner) that the entry was read from or mirrors."""
+  name = name.lower()
+  index = model_index.load()
+  if name in index:
+    return name
+  for key, entry in index.items():
+    for repo in (entry["hf_config_source"], entry.get("mirror_of", "")):
+      if repo and name in (repo.lower(), repo.lower().rsplit("/", 1)[-1]):
+        return key
+  return None
+
+
+def from_index(key: str) -> Model:
+  entry = model_index.load()[key]
+  return from_hf_dict(entry["config"], key, source=(f"{entry['hf_config_source']}@"
+                                                    f"{entry['hf_config_revision'][:12]}"))
+
+
 def from_name(name: str) -> Model:
-  """A JAX-Titan Llama flavor, `maxtext:<name>` or `hf:<path to config.json>`."""
-  if name.startswith("maxtext:"):
-    return from_maxtext(name.split(":", 1)[1])
+  """A downloaded model (a path to its config.json or the directory holding it, with
+  or without `hf:`), a model in the index (by name or Hugging Face repository),
+  `maxtext:<name>` (from the index when it has the name, else from MaxText's config),
+  or a JAX-Titan Llama flavor. A path that exists comes first."""
   if name.startswith("hf:"):
     return from_hf_config(name.split(":", 1)[1])
+  local = pathlib.Path(name).expanduser()
+  if local.is_file() or (local / "config.json").is_file():
+    return from_hf_config(local)
+  if name.startswith("maxtext:"):
+    key = lookup(name.split(":", 1)[1])
+    return from_index(key) if key else from_maxtext(name.split(":", 1)[1])
+  key = lookup(name)
+  if key:
+    return from_index(key)
   from jax_titan.models import llama  # pylint: disable=g-import-not-at-top
 
   if name not in llama.FLAVORS:
-    raise ValueError(f"unknown model {name!r}: a Llama flavor ({', '.join(llama.FLAVORS)}), "
-                     "maxtext:<name> or hf:<config.json>")
+    raise ValueError(
+        f"unknown model {name!r}: a path to a downloaded config.json or its directory, one "
+        f"of {', '.join(model_index.load())} (or its Hugging Face repository), "
+        f"maxtext:<name>, or a Llama flavor ({', '.join(llama.FLAVORS)})")
   return from_llama(llama.FLAVORS[name], name)

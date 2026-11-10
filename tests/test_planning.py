@@ -13,6 +13,7 @@ from jax_titan.planning import budget
 from jax_titan.planning import comms
 from jax_titan.planning import gpus
 from jax_titan.planning import memory
+from jax_titan.planning import model_index
 from jax_titan.planning import models
 
 RESULTS = pathlib.Path(__file__).parent.parent / "docs" / "results" / "2026-11-07"
@@ -51,6 +52,54 @@ def test_published_parameter_counts(tmp_path):
   assert mixtral.params(active=True) / 1e9 == pytest.approx(12.9, rel=0.01)
   assert _hf(tmp_path, "70b", LLAMA3_70B).params() / 1e9 == pytest.approx(70.6, rel=0.005)
   assert _hf(tmp_path, "405b", LLAMA3_405B).params() / 1e9 == pytest.approx(405.9, rel=0.005)
+
+
+@pytest.mark.parametrize("name,total,active", [
+    ("llama3.1-8b", 8.03, None), ("llama3.1-70b", 70.6, None), ("llama3.1-405b", 405.9, None),
+    ("mistral-7b", 7.24, None), ("mixtral-8x7b", 46.7, 12.9), ("mixtral-8x22b", 141, 39),
+    ("qwen3-8b", 8.2, None), ("qwen3-32b", 32.8, None), ("qwen3-30b-a3b", 30.5, 3.3),
+    ("qwen3-235b-a22b", 235, 22),
+])
+def test_index_models_match_their_model_cards(name, total, active):
+  model = models.from_name(name)
+  assert model.params() / 1e9 == pytest.approx(total, rel=0.01)
+  if active:
+    assert model.params(active=True) / 1e9 == pytest.approx(active, rel=0.02)
+
+
+def test_index_resolves_hugging_face_repositories_in_any_case():
+  assert models.lookup("meta-llama/Llama-3.1-70B") == "llama3.1-70b"
+  assert models.lookup("Qwen3-235B-A22B") == "qwen3-235b-a22b"
+  assert models.lookup("Mixtral-8x7B-v0.1") == "mixtral-8x7b"
+  assert models.lookup("no-such-model") is None
+  assert models.from_name("llama3.1-70b").source.startswith("unsloth/Meta-Llama-3.1-70B@")
+
+
+def test_index_matches_the_trainers_llama():
+  trainer = models.from_llama(llama.FLAVORS["llama3.1-8b"], "llama3.1-8b")
+  assert dataclasses.replace(models.from_name("llama3.1-8b"), source="") == (
+      dataclasses.replace(trainer, source=""))
+
+
+def test_maxtext_names_in_the_index_need_no_maxtext(monkeypatch):
+  monkeypatch.setattr(models, "from_maxtext", lambda name: pytest.fail(f"read MaxText's {name}"))
+  assert models.from_name("maxtext:llama3.1-8b") == models.from_name("llama3.1-8b")
+
+
+def test_hf_takes_a_downloaded_model_directory(tmp_path):
+  model_dir = tmp_path / "Llama-3-70B"
+  model_dir.mkdir()
+  (model_dir / "config.json").write_text(json.dumps(LLAMA3_70B))
+  for name in (f"hf:{model_dir}", str(model_dir), str(model_dir / "config.json")):
+    model = models.from_name(name)
+    assert model.name == "Llama-3-70B"
+    assert model.params() / 1e9 == pytest.approx(70.6, rel=0.005)
+
+
+def test_index_add_points_a_local_config_to_hf(tmp_path, capsys):
+  with pytest.raises(SystemExit):
+    model_index.main(["--add", "qwen3-14b", str(tmp_path)])
+  assert "--model=<config.json or its directory>" in capsys.readouterr().err
 
 
 def test_llama3_405b_compute_matches_the_paper(tmp_path):
