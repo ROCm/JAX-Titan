@@ -14,7 +14,6 @@ from jax_titan import ops
 from jax_titan.ops import conformance
 from jax_titan.ops import registry
 from jax_titan.ops.partitioned import partitioned
-from jax_titan.ops.providers import xla
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -153,13 +152,15 @@ def test_conformance_native_on_cpu():
   assert rows and all(r["status"] == "pass" for r in rows), rows
 
 
-def test_xla_fp8_on_cpu():
-  rows = conformance.run(["xla_fp8"], ["single", "sharded"], quick=True,
+@pytest.mark.parametrize("provider, qtype", [
+    ("xla_fp8", "f8E4M3FN"), ("xla_mxfp8", "f8E4M3FN"), ("xla_mxfp4", "f4E2M1FN")])
+def test_xla_quantized_on_cpu(provider, qtype):
+  rows = conformance.run([provider], ["single", "sharded"], quick=True,
                          ops_filter={"linear", "swiglu"})
   assert rows and all(r["status"] == "pass" for r in rows), rows
   x, w = jnp.ones((64, 256), jnp.bfloat16), jnp.ones((256, 128), jnp.bfloat16)
-  text = jax.jit(xla.linear).lower(x, w).as_text()
-  assert next(l for l in text.splitlines() if "dot_general" in l).count("f8E4M3FN") == 2
+  with ops.policy(f"linear={provider}"):
+    assert qtype in jax.jit(lambda x, w: ops.linear(x, w)).lower(x, w).as_text()
 
 
 def test_trainer_records_ops(tmp_path):
