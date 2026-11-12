@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks a shared dev node before a job: how much disk space is left, the users
-# taking the most disk, and which users are on the GPUs. Reads only. Run on the
-# host, not inside a container, so it sees every user.
+# taking the most disk, and which users are on the GPUs. Reads only and writes
+# no files, so it also runs when the disk is full. Run on the host, not inside a
+# container, so it sees every user.
 #
 # Disk per user adds each entry directly under SCAN_DIRS (/home /tmp /var/tmp)
 # to its owner, and each container's writable layer to its user: the one its
@@ -36,7 +37,7 @@ while (( $# )); do
       if (( $# < 2 )); then echo "$1 needs a value" >&2; exit 2; fi
       TOP_K=$2; shift ;;
     --no-docker) sizes=0 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -54,9 +55,13 @@ function human(b,  u, i) {
   if (i > 1 && b < 10) return sprintf("%.1f%s", up(b * 10) / 10, u[i])
   return sprintf("%d%s", up(b), u[i]) }'
 human() { awk -v b="$1" "${HUMAN}"' BEGIN { print human(b) }'; }
+# Free space as df computes Use%: used / (used + available), rounded up.
+FREE='
+function free_pct(used, avail,  pct) {
+  if (used + avail == 0) return 100
+  pct = used * 100 / (used + avail)
+  return 100 - int(pct) - (pct > int(pct)) }'
 
-tmp=$(mktemp -d)
-trap 'rm -rf "${tmp}"' EXIT
 sudo=()
 if sudo -n true 2>/dev/null; then sudo=(sudo -n); fi
 
@@ -87,6 +92,7 @@ container_user() {
 
 declare -A cname cuser
 docker_ok=0
+sizes_fd=""
 if docker info >/dev/null 2>&1; then
   docker_ok=1
   while IFS=$'\t' read -r id name mounts; do
@@ -95,8 +101,9 @@ if docker info >/dev/null 2>&1; then
   done < <(docker ps -aq --no-trunc | xargs -r docker inspect \
     -f '{{.Id}}{{"\t"}}{{.Name}}{{"\t"}}{{range .Mounts}}{{.Source}} {{end}}')
   if (( sizes )); then
-    docker ps -a --no-trunc --size --format '{{.ID}}\t{{.State}}\t{{.Size}}' \
-      > "${tmp}/sizes" 2>/dev/null &
+    # Runs during the disk scan; read once the scan is done.
+    exec {sizes_fd}< <(docker ps -a --no-trunc --size \
+      --format '{{.ID}}\t{{.State}}\t{{.Size}}' 2>/dev/null)
   fi
 fi
 
@@ -110,20 +117,21 @@ df_paths=(/ "${SCAN_DIRS[@]}" /dev/shm)
 if (( docker_ok )); then
   df_paths+=("$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)")
 fi
-df -B1 --output=target,fstype,size,used,avail "${df_paths[@]}" 2>/dev/null \
-  | awk -v min="${MIN_FREE_PCT}" -v low="${tmp}/low" -v lowest="${tmp}/lowest" "${HUMAN}"'
-    NR == 1 { printf "  %-16s %-6s %7s %7s %7s %6s\n", "MOUNT", "TYPE", "SIZE", "USED",
-              "FREE", "FREE%"; next }
-    seen[$1]++ { next }
-    {
-      # As df computes Use%: used / (used + available), rounded up.
-      pct = $4 * 100 / ($4 + $5); free = 100 - int(pct) - (pct > int(pct))
-      printf "  %-16s %-6s %7s %7s %7s %5d%%%s\n", $1, $2, human($3), human($4),
-             human($5), free, (free < min ? "  low" : "")
-      if (free < min) print $1 " " free "%" > low
-      if (!n++ || free < best) { best = free; where = $1 }
-    }
-    END { if (n) print best "% (" where ")" > lowest }' || true
+df_out=$(df -B1 --output=target,fstype,size,used,avail "${df_paths[@]}" 2>/dev/null || true)
+printf '%s\n' "${df_out}" | awk -v min="${MIN_FREE_PCT}" "${HUMAN}${FREE}"'
+  NR == 1 { printf "  %-16s %-6s %7s %7s %7s %6s\n", "MOUNT", "TYPE", "SIZE", "USED",
+            "FREE", "FREE%"; next }
+  seen[$1]++ { next }
+  { free = free_pct($4, $5)
+    printf "  %-16s %-6s %7s %7s %7s %5d%%%s\n", $1, $2, human($3), human($4),
+           human($5), free, (free < min ? "  low" : "") }'
+# Filesystems under MIN_FREE_PCT ("/ 8%"), and the one with the least free.
+low=$(printf '%s\n' "${df_out}" | awk -v min="${MIN_FREE_PCT}" "${FREE}"'
+  NR > 1 && !seen[$1]++ && free_pct($4, $5) < min {
+    printf "%s%s %d%%", sep, $1, free_pct($4, $5); sep = " " }')
+lowest=$(printf '%s\n' "${df_out}" | awk "${FREE}"'
+  NR > 1 && !seen[$1]++ { f = free_pct($4, $5); if (!n++ || f < best) { best = f; at = $1 } }
+  END { if (n) printf "%d%% (%s)", best, at }')
 
 echo "== GPUs"
 nodes=/sys/class/kfd/kfd/topology/nodes
@@ -236,35 +244,30 @@ if (( ! ${#sudo[@]} )); then
   echo "  no sudo: ${unreadable} home directories are unreadable and count as near 0"
 fi
 echo "  scanning..." >&2
-"${sudo[@]}" find "${SCAN_DIRS[@]}" -mindepth 1 -maxdepth 1 -printf '%u\t%p\0' \
-  > "${tmp}/owners" 2>/dev/null || true
-"${sudo[@]}" find "${SCAN_DIRS[@]}" -mindepth 1 -maxdepth 1 -print0 2>/dev/null \
-  | "${sudo[@]}" xargs -0 -r -P "${JOBS}" -n 8 du -0 -sx --block-size=1 \
-  > "${tmp}/du" 2>/dev/null || true
-
 declare -A owner file_bytes cont_bytes cont_count
 while IFS=$'\t' read -r -d '' user path; do
   owner[${path}]=${user}
-done < "${tmp}/owners"
+done < <("${sudo[@]}" find "${SCAN_DIRS[@]}" -mindepth 1 -maxdepth 1 -printf '%u\t%p\0' \
+  2>/dev/null)
 while IFS=$'\t' read -r -d '' bytes path; do
   user=${owner[${path}]:-?}
   file_bytes[${user}]=$(( ${file_bytes[${user}]:-0} + bytes ))
-done < "${tmp}/du"
+done < <("${sudo[@]}" find "${SCAN_DIRS[@]}" -mindepth 1 -maxdepth 1 -print0 2>/dev/null \
+  | "${sudo[@]}" xargs -0 -r -P "${JOBS}" -n 8 du -0 -sx --block-size=1 2>/dev/null)
 
-wait
-: > "${tmp}/containers"
-if [[ -s ${tmp}/sizes ]]; then
+containers=""
+if [[ -n ${sizes_fd} ]]; then
   # Docker prints decimal units: 1.77GB is 1.77e9 bytes.
   while IFS=$'\t' read -r id state bytes; do
     user=${cuser[${id}]:-?}
     cont_bytes[${user}]=$(( ${cont_bytes[${user}]:-0} + bytes ))
     cont_count[${user}]=$(( ${cont_count[${user}]:-0} + 1 ))
-    printf '%s\t%s\t%s\t%s\n' "${bytes}" "${user}" "${state}" \
-      "${cname[${id}]:-${id:0:12}}" >> "${tmp}/containers"
+    containers+="${bytes}"$'\t'"${user}"$'\t'"${state}"$'\t'"${cname[${id}]:-${id:0:12}}"$'\n'
   done < <(awk -F'\t' 'BEGIN { f["B"] = 1; f["kB"] = 1e3; f["MB"] = 1e6
       f["GB"] = 1e9; f["TB"] = 1e12; f["PB"] = 1e15 }
     { split($3, s, " "); n = s[1] + 0; u = s[1]; sub(/^[0-9.]+/, "", u)
-      printf "%s\t%s\t%.0f\n", $1, $2, n * f[u] }' "${tmp}/sizes")
+      printf "%s\t%s\t%.0f\n", $1, $2, n * f[u] }' <&"${sizes_fd}")
+  exec {sizes_fd}<&-
 fi
 
 printf '%s\n' "${!file_bytes[@]}" "${!cont_bytes[@]}" | sort -u | while IFS= read -r user; do
@@ -279,23 +282,25 @@ done | sort -t$'\t' -k1,1nr | awk -F'\t' -v k="${TOP_K}" "${HUMAN}"'
             human($3), ($5 ? human($4) : "-"), ($5 ? " (" $5 ")" : "") }'
 
 echo "== Top ${TOP_K} containers by writable layer"
-if [[ -s ${tmp}/containers ]]; then
-  sort -t$'\t' -k1,1nr "${tmp}/containers" | awk -F'\t' -v k="${TOP_K}" "${HUMAN}"'
+if (( ! docker_ok )); then
+  echo "  docker is not available to ${USER}"
+elif (( ! sizes )); then
+  echo "  skipped (--no-docker)"
+elif [[ -z ${containers} ]]; then
+  echo "  none"
+else
+  printf '%s' "${containers}" | sort -t$'\t' -k1,1nr | awk -F'\t' -v k="${TOP_K}" "${HUMAN}"'
     NR == 1 { printf "  %8s  %-12s %-8s %s\n", "SIZE", "USER", "STATE", "NAME" }
     NR <= k { printf "  %8s  %-12s %-8s %s\n", human($1), ($2 == "?" ? "(unknown)" : $2),
               $3, $4 }'
   echo "  not counted: images and build cache, shared by all (docker system df)"
-elif (( ! docker_ok )); then
-  echo "  docker is not available to ${USER}"
-else
-  echo "  skipped (--no-docker)"
 fi
 
 echo "== Summary"
-if [[ -s ${tmp}/low ]]; then
-  echo "  disk: below ${MIN_FREE_PCT}% free on $(paste -sd' ' "${tmp}/low")"
+if [[ -n ${low} ]]; then
+  echo "  disk: below ${MIN_FREE_PCT}% free on ${low}"
 else
-  echo "  disk: lowest free $(cat "${tmp}/lowest" 2>/dev/null || echo '?')"
+  echo "  disk: lowest free ${lowest:-?}"
 fi
 users=$(printf '%s\n' "${gpu_users[@]}" | sort -u | paste -sd' ' - | sed 's/ /, /g')
 echo "  gpu users: ${users:-none}"
@@ -306,6 +311,6 @@ fi
 if (( ${#idle[@]} )); then
   echo "  gpus without load: $(list "${idle[@]}") (HIP_VISIBLE_DEVICES=$(list "${idle[@]}"))"
 fi
-if (( ${#pids[@]} || ${#busy[@]} )) || [[ -s ${tmp}/low ]]; then
+if (( ${#pids[@]} || ${#busy[@]} )) || [[ -n ${low} ]]; then
   exit 1
 fi
