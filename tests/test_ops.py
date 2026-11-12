@@ -152,6 +152,17 @@ def test_conformance_native_on_cpu():
   assert rows and all(r["status"] == "pass" for r in rows), rows
 
 
+@pytest.mark.parametrize("provider, qtype", [
+    ("xla_fp8", "f8E4M3FN"), ("xla_mxfp8", "f8E4M3FN"), ("xla_mxfp4", "f4E2M1FN")])
+def test_xla_quantized_on_cpu(provider, qtype):
+  rows = conformance.run([provider], ["single", "sharded"], quick=True,
+                         ops_filter={"linear", "swiglu"})
+  assert rows and all(r["status"] == "pass" for r in rows), rows
+  x, w = jnp.ones((64, 256), jnp.bfloat16), jnp.ones((256, 128), jnp.bfloat16)
+  with ops.policy(f"linear={provider}"):
+    assert qtype in jax.jit(lambda x, w: ops.linear(x, w)).lower(x, w).as_text()
+
+
 def test_trainer_records_ops(tmp_path):
   log = tmp_path / "log.jsonl"
   result = subprocess.run(

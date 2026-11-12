@@ -368,3 +368,60 @@ Training with the same layouts and batches as above:
   the BF16 product (relative error 1.4) on this stack, though its own tests,
   which check finiteness, pass. JAX-AITER exposes no MoE kernels at its pin,
   and `flash_attn_varlen` waits for a packed-sequence data path.
+
+## Quantized GEMMs compiled by XLA (2026-11-11, 8x MI350X)
+
+`xla_fp8`, `xla_mxfp8` and `xla_mxfp4` quantize `linear` and the three GEMMs
+of `swiglu` in JAX and leave the kernels to XLA, which runs each GEMM on
+hipBLASLt or on its Triton GEMMs: per-tensor current-scaling FP8 (E4M3
+operands, E5M2 gradients), and MaxText's `jax_mxfp8` and `jax_mxfp4` recipes
+through `jax.nn.scaled_dot_general` (E4M3 or E2M1 data in blocks of 32 with an
+E8M0 scale per block, gradients in the same format). They need no kernel
+library. These runs check that the recipes are correct. They ran on 8x
+MI350X with the stack of the 2026-11-05 results, whose XLA has no swizzled MX
+scale layout, one run per configuration, and they are not a performance
+comparison with the MI355X tables above. Rows are in
+[results/2026-11-11](results/2026-11-11).
+
+The comparison with MaxText's recipes, in throughput and in loss, is in
+[quantization_vs_maxtext.md](quantization_vs_maxtext.md).
+
+| Op | Provider | One GPU | vmap | Sharded | shard_map | MPMD step | Forward plus backward |
+|---|---|---|---|---|---|---|---|
+| linear, swiglu | `xla_fp8` | pass (FP8 error) | pass | pass | pass | pass | 1.11-1.30x |
+| linear, swiglu | `xla_mxfp8` | pass (MXFP8 error) | pass | pass | pass | pass | 0.62-0.85x |
+| linear, swiglu | `xla_mxfp4` | pass (MXFP4 error) | pass | pass | pass | pass | 0.17-0.96x |
+
+One GPU and the timings are from an MI350X at the Llama 3.1 8B shapes; vmap,
+Sharded, shard_map and the MPMD step ran on 8 CPU devices at the small shapes
+(`ops-conformance_xla_cpu.jsonl`). Against float32, `linear` has 3.7-3.8%
+error forward and 5.9% in its gradients with FP8, 3.8% and 3.8% with MXFP8,
+and 16% and 16% with MXFP4; `swiglu`, with three GEMMs, 1.6 to 1.9 times that.
+
+Llama 3.1 8B with FSDP over 8 GPUs, 8 sequences of 2,048 tokens per GPU and
+step, WikiText-103, 40 steps:
+
+| `--ops` | Tokens/s per GPU | vs BF16 | First step | Peak HBM per GPU | Loss at step 39 |
+|---|---|---|---|---|---|
+| native (BF16) | 9,786 | | 14 s | 42.6 GiB | 7.427 |
+| `linear=xla_fp8,swiglu=xla_fp8` | 11,208 | 1.15x | 12 s | 42.2 GiB | 7.407 |
+| `linear=xla_mxfp8,swiglu=xla_mxfp8` | 9,581 | 0.98x | 479 s | 44.6 GiB | 7.440 |
+| `linear=xla_mxfp4,swiglu=xla_mxfp4` | 10,132 | 1.04x | 2,170 s | 42.4 GiB | 7.398 |
+
+- **Every projection GEMM runs on quantized data**, read from XLA's optimized
+  HLO: with FP8 on hipBLASLt's and Triton's FP8 GEMMs, with MXFP8 on hipBLASLt
+  MX GEMMs, Triton scaled dots and BF16 GEMMs over dequantized MX data, and
+  with MXFP4 on hipBLASLt MX GEMMs and Triton scaled dots. No step is
+  non-finite, step-0 losses are within 0.02% of BF16, and over the last 10
+  steps the loss differs from BF16 by 0.2-0.6% on average.
+- **The MX recipes are slow to start on this stack:** the first step takes
+  479 s with MXFP8 and 2,170 s with MXFP4, and MXFP4 compiles for 21 minutes.
+  MXFP4 outlasts XLA's 600 s wait at the first collective unless
+  `--xla_gpu_first_collective_call_terminate_timeout_seconds` and
+  `--xla_gpu_executable_terminate_timeout` are raised (to 3600 here) and the
+  trainer runs with `--step_timeout=0`.
+- **`xla_mxfp8` cannot train on CPU:** `jax.nn.scaled_dot_general` gives an
+  all-zero block the E8M0 scale 2^-127, a float32 subnormal that XLA:CPU
+  flushes to zero, so the block divides 0 by 0. A train step has such blocks;
+  in causal attention, for example, the query gradient of the first token is
+  zero. GPUs keep subnormals, and MXFP4 hides the NaN because E2M1 has none.
