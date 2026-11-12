@@ -7,8 +7,9 @@ links to the page that documents it.
 ## A job, stage by stage
 
 1. **Set up once.** Start the container with `scripts/container.sh` on the
-   host, build the wheels, and `source scripts/env.sh` in every shell in the
-   container ([getting_started.md](getting_started.md)).
+   host, build the wheels, `source scripts/env.sh` in every shell in the
+   container, and prepare the data with `python -m jax_titan.data.text`
+   ([getting_started.md](getting_started.md)).
 2. **Check the node.** On the host, `scripts/preflight_dev.sh` shows disk
    space and who holds each GPU, and `scripts/gpus_free.sh` must print
    `free`. After a code change, run `python -m pytest tests/` first.
@@ -56,7 +57,7 @@ examples. The planners, and the tools that read a finished run (`summarize`,
 | Command | What it checks |
 |---|---|
 | `python -m pytest tests/` | On CPU with 8 devices: schedules and layouts against `jax.jit`, exact checkpoint resume, the MaxText and MaxDiffusion adapters (skipped without their extras), the planners, and the agent skills' two copies |
-| `python examples/<name>_parity.py --platform=cpu` | A pipeline step against one `jax.jit` program, and the adapter stages against MaxText's and MaxDiffusion's own models ([getting_started.md](getting_started.md#5-runs)) |
+| `python examples/<name>.py --platform=cpu` | A two-stage MLP step (`mpmd_two_mesh_spike.py`) and a pipeline step, each against one `jax.jit` program; the adapter stages against MaxText's and MaxDiffusion's own models ([getting_started.md](getting_started.md#5-runs)) |
 | `ops.conformance` | Operator providers against native JAX: outputs and gradients on one GPU, under `jax.vmap`, sharded, inside `shard_map` and inside an MPMD step, and their timings ([getting_started.md](getting_started.md#5-runs)) |
 
 ### Measuring a run
@@ -84,6 +85,7 @@ examples. The planners, and the tools that read a finished run (`summarize`,
 | `planning.step` | Step time by part: compute, collectives, bubble and runtime gaps. `--calibrate RUN` fits the parts to a run; `--ladder` predicts other GPU counts, with `--weak` keeping the batch per GPU ([planning.md](planning.md#step-time-calibration-and-the-scale-ladder)) |
 | `planning.collectives` | RCCL and MORI time by message size; `--calibrate` turns `bench_collectives.sh` output into a table ([planning.md](planning.md#collectives-rccl-and-mori)) |
 | `planning.remaining RUN` | Time left in a running job ([planning.md](planning.md#during-a-run-time-left-and-the-performance-database)) |
+| `planning.model_index` | The models the planners know by name, with the Hugging Face repository and commit each config came from; `--add NAME REPO` pins another ([planning.md](planning.md#the-model-config-index)) |
 | `observability.flops` | Model and executed FLOPs per op and per stage, and the layer split that balances the stages ([metrics.md](metrics.md#tools)) |
 
 ## Agent skills
