@@ -36,3 +36,9 @@ scan:
     - dist
     - node_modules
     - __pycache__
+    # Vendored JaxPP (third_party/jaxpp): its NVIDIA CUDA images, which
+    # JAX-Titan neither builds nor ships.
+    - third_party/jaxpp/scripts/docker
+  skip-files:
+    # Vendored JaxPP's pins for its own examples; JAX-Titan never installs them.
+    - third_party/jaxpp/examples/requirements.txt
