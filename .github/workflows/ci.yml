@@ -1,0 +1,39 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# The job installs JAX from PyPI, so it runs only tests that need neither the
+# patched jaxlib nor Shardy's MPMD package (docs/getting_started.md).
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cpu-tests:
+    name: CPU tests (JAX from PyPI)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install JAX-Titan
+        run: python -m pip install -e ".[test]"
+      - name: Show installed versions
+        run: python -m pip freeze
+      - name: Run tests
+        run: python -m pytest tests/test_collectives.py
