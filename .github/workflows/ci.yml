@@ -1,8 +1,8 @@
 # Copyright Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# The job installs JAX from PyPI, so it runs only tests that need neither the
-# patched jaxlib nor Shardy's MPMD package (docs/getting_started.md).
+# The CPU job installs JAX from PyPI, so it runs only tests that need neither
+# the patched jaxlib nor Shardy's MPMD package (docs/getting_started.md).
 
 name: CI
 
@@ -37,3 +37,19 @@ jobs:
         run: python -m pip freeze
       - name: Run tests
         run: python -m pytest tests/test_agent_skills.py
+
+  gpu-smoke:
+    name: GPU smoke test (MI350)
+    runs-on: linux-jax-titan-mi350-1
+    # A pull request from a fork never runs on a self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/rocm/jax-base-ubu24.therock-10.1@sha256:9abb85fde7485b89db61f87d5f583bb1c3b980d479fff7d6d7ed988d652c57b3 # latest on 2026-11-13
+      options: --device=/dev/kfd --device=/dev/dri --group-add video --shm-size 64G --env-file /etc/podinfo/gha-gpu-isolation-settings
+    steps:
+      - name: Show the GPUs
+        run: |
+          # TheRock images have no /opt/rocm; rocminfo is in the SDK's bin directory.
+          export PATH="$(rocm-sdk path --bin):$PATH"
+          rocminfo | grep gfx
