@@ -18,6 +18,8 @@ links to the page that documents it.
 4. **Run.** `python -m jax_titan.trainer.train` under `timeout`, with
    `--run_dir` so that the run is recorded
    ([metrics.md](metrics.md#recording-a-run)).
+   On a Slurm cluster, `scripts/slurm_submit.sh` submits the run as an sbatch
+   job that also starts the container and builds what is missing.
 5. **Clean up.** `scripts/cleanup_after_train.sh` shows what it would stop and
    remove; `--yes` applies it.
 6. **Read the run.** `observability.summarize`, `profile`, `plot` and `ettr`.
@@ -40,6 +42,9 @@ processes. The others need the container's TheRock libraries.
 | `preflight_dev.sh` | host | Reads only: free space on each filesystem, each GPU's load and the users holding it, the top users by disk and the largest containers. Exits 1 when a process holds a GPU, a GPU is busy, or a filesystem is below 10% free. `--top N` sets the list length; `--no-docker` skips container sizes |
 | `cleanup_after_train.sh` | host or container | Prints what it would do: stop your JAX-Titan processes, wait until they release the GPUs, and remove your stale `/dev/shm/nccl-*` segments, the Orbax checkpoints named with `--checkpoint`, and your GPU core dumps. `--yes` applies it |
 | `bench_collectives.sh` | container | Measures RCCL (and MORI-EP when installed) time and bus bandwidth by message size on this node, for the planner. Needs free GPUs ([planning.md](planning.md#collectives-rccl-and-mori)) |
+| `setup_sources.sh` | login node or host | Creates the `jax`, `xla` and `shardy` trees in `${JAX_TITAN_ROOT}/src` at the tested revisions, as worktrees of sibling `../jax` and `../xla` checkouts when they exist, and applies the patches. Git only |
+| `slurm_submit.sh` | Slurm login node | Submits `slurm_job.sh` as a one-node, 8-GPU sbatch job with logs in `${JAX_TITAN_ROOT}/logs/slurm/`; trainer flags go after `--`; `-n` prints the sbatch line, `--setup-only` stops before training. Cluster settings (partition, QOS, scratch, GPU request) come from a file named by `JT_SITE_ENV`, kept outside the repository |
+| `slurm_job.sh` | compute node (sbatch) | Checks the node (docker, AMD GPUs, shared filesystem, free GPUs), starts the TheRock container, builds the wheels and the venv when missing, runs the trainer under a timeout, and on exit, also after SIGTERM, cleans up and removes the container |
 
 `preflight_dev.sh` and `cleanup_after_train.sh` read `USER`, which
 `docker exec` does not set; export it first in a shell started that way. The
@@ -90,7 +95,7 @@ examples. The planners, and the tools that read a finished run (`summarize`,
 
 ## Agent skills
 
-Three skills hold the project's rules for coding agents, with identical
+Four skills hold the project's rules for coding agents, with identical
 content in `.claude/skills/` (Claude Code) and `.cursor/skills/` (Cursor).
 An agent working in this repository loads a skill when the task matches its
 description; you can also name it in the request, for example "use
@@ -101,6 +106,7 @@ jax_titan_training to run the no-pipeline baseline".
 | `jax_titan_coding` | Writing or reviewing code in this repository | Architecture rules (stages, meshes, shardings, operators, adapters, precision), testing rules (a new schedule, layout or model matches `jax.jit`), and code style |
 | `jax_titan_training` | Launching, monitoring, comparing or cleaning up a training job | Checks before a run, launch commands, red flags while it runs, how to compare against a baseline, and a cleanup checklist; `reference.md` adds run names, what to record for each result and the notes file |
 | `jax_titan_debug` | A stack trace or log points into jaxlib, XLA, Shardy or ROCm | Which component owns a failure, known failures and their fixes, and the workflow for an upstream patch |
+| `jax_titan_slurm` | Running a job through Slurm sbatch | Requirements and cluster settings, the source trees, submitting with `slurm_submit.sh`, why a job is pending, what the job log shows stage by stage, expected step times, failures and their fixes |
 
 Edit both copies of a skill: `tests/test_agent_skills.py` fails when they
 differ. The SPUR runbook adds rules for agents on that cluster
