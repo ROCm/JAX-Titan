@@ -10,6 +10,7 @@ Name a run `{model}_{layout}_{schedule}[_{variant}]`, for example
 | `${JAX_TITAN_ROOT}/logs/<topic>/<run>.out` | stdout and stderr, including compile time and peak HBM |
 | `${JAX_TITAN_ROOT}/logs/<topic>/<run>.jsonl` | `--log_file`: one record per step (loss, step time, tokens/s, MFU) |
 | `--profile_dir` | `jax.profiler` traces; summarize with `python -m jax_titan.observability.profile DIR` |
+| `${JAX_TITAN_ROOT}/logs/<topic>/<run>.hlo` | XLA dump: `XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS --xla_dump_to=DIR --xla_dump_hlo_as_text"` with `JAX_ENABLE_COMPILATION_CACHE=false` (a cache hit dumps nothing); its GEMMs per step, with library and kernel configuration, with `python3 src/jax_titan/observability/gemms.py DIR --run_dir RUN --merge [--sites]`, which needs only the Python standard library |
 | `docs/results/<date>/<run>.jsonl` | Logs kept as evidence for a documented result |
 
 ## Per-Run Record

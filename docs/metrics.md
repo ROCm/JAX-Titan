@@ -58,6 +58,10 @@ python -m jax_titan.observability.detectors runs/detectors -- --model=llama3.1-8
 # Collective completion times from an Inspector directory.
 python -m jax_titan.observability.collectives runs/a/rccl_inspector
 
+# The GEMMs a run's compiled program launches: shapes, dtypes, layouts, library and
+# kernel configuration, launches per training step (below). Standard library only.
+python3 src/jax_titan/observability/gemms.py runs/a.hlo --run_dir runs/a --merge [--sites] [--csv gemms.csv]
+
 # Figures: MFU and step time over wall time with saves, validation and restarts marked,
 # loss against tokens, gradient norm, power; comparison.svg for several runs. Needs the
 # plots extra (matplotlib); the trainer draws <run_dir>/figures/ itself when it is there.
@@ -87,6 +91,161 @@ python -m jax_titan.planning.remaining runs/a --target_tokens 2e12
 The operator conformance bench (`jax_titan.ops.conformance --modes=bench`) ends
 with each provider's geometric-mean speedup across shapes and its
 time-weighted speedup (total native time over total provider time).
+
+## GEMMs in the compiled program
+
+`jax_titan.observability.gemms` lists every GEMM the compiled program
+launches, with the library and kernel configuration XLA chose for it. It reads
+XLA's dump of each module's final HLO,
+`module_*.<gfx arch>_gpu_after_optimizations.txt`, written after every pass and
+after autotuning has bound each GEMM to the kernel it picked. The kernels the
+autotuner timed and dropped never appear: `autotune_results.pbtxt` and the
+`before_*` dumps are not read. When XLA also wrote the module's
+`thunk_sequence.txt`, the executable's launch list, the tool checks that it
+launches every GEMM the HLO holds.
+
+The tool is one file that uses only the Python standard library. It needs
+neither JAX nor JAX-Titan, reads the dump of any XLA program, and runs from a
+checkout or as a copy on another machine with Python 3.8 or later:
+`python3 src/jax_titan/observability/gemms.py DUMP`. Inside JAX-Titan's
+environment, `python -m jax_titan.observability.gemms` runs the same code.
+
+The parallelism does not matter either. Under SPMD (`--parallel=dp` or
+`fsdp`, or any `jax.jit` program) XLA compiles one partitioned module,
+`jit_train_step`, which a step runs once on every device. Under MPMD it
+compiles one module per pipeline fragment, which runs on its stage's devices.
+Either way the shapes are what one device computes, and the merged table of a
+pipeline adds up one device of each stage.
+
+Dump while the program compiles; with a warm compilation cache XLA compiles
+nothing and dumps nothing. Two steps suffice, and the dump of the 8B pipeline
+is 18 MB:
+
+```bash
+JAX_ENABLE_COMPILATION_CACHE=false \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS --xla_dump_to=runs/a.hlo --xla_dump_hlo_as_text" \
+  python -m jax_titan.trainer.train --model=llama3.1-8b --num_stages=2 --steps=2 \
+  --run_dir=runs/a
+python3 src/jax_titan/observability/gemms.py runs/a.hlo --run_dir runs/a --merge
+```
+
+`runs/a.hlo` is the dump, one set of files per compiled module. `--run_dir
+runs/a` points at the trainer's run directory, whose `train.jsonl` says how
+often one training step runs each module: the counts become launches per step,
+and the modules a step never runs (initialization, random-number helpers) drop
+out. `--merge` prints one table over all modules, adding up a shape that
+several pipeline fragments run; without it there is one table per module.
+
+The dump's HLO is the same on every ROCm GPU, so the tool reads MI300X and
+MI325X dumps (`gfx942_gpu_after_optimizations.txt`, with FP8 in the `fnuz`
+types) as it reads MI355X's; what changes is the library and configuration
+the autotuner picks for each GEMM. The results below are from gfx950.
+
+A GEMM is a hipBLASLt call (`__cublas$lt$matmul`, also `$f8` and `$mx`), a
+rocBLAS call (`__cublas$gemm`), a fusion around a `dot` (`Triton` for XLA's
+Triton GEMMs), or a plain `dot`, `ragged-dot` or `scaled-dot` (`XLA`). One in
+a `while` body counts once per trip when XLA knows the trip count, as for the
+scan over each stage's layers; one in a branch of a `conditional` is flagged.
+Without `--run_dir`, counts are per run of each module. With it, they are per
+training step: the trainer's `compile` event records each program a step runs
+and its calls (`programs` in `train.jsonl`). For a program the trainer did not
+run, `--calls FILE` takes the same counts from a JSON object
+`{"module": calls}`, or from the step's `lowered.as_text()`, whose IFRT or MPMD
+fragment calls it counts. An SPMD step runs `jit_train_step` once. A pipeline
+runs each stage's forward fragment once per microbatch (`p1_stage1_fwd_call0`, ...), and a
+backward fragment serving all microbatches (`p3_stage1_bwd_calls0to7`) once
+for each; the name alone does not give the count, since `p7_stage1_bwd` also
+runs once per microbatch.
+
+The outputs below come from Llama 3.1 8B on two MI355X GPUs, one per stage,
+with one sequence per microbatch. Each GPU gets the GEMM shapes of the default
+2 stages x 4 GPUs, where `--microbatch_size=4` splits a microbatch's four
+sequences across a stage's four GPUs:
+
+```bash
+HIP_VISIBLE_DEVICES=0,1 JAX_ENABLE_COMPILATION_CACHE=false \
+XLA_FLAGS="$JAX_TITAN_ROCM_XLA_FLAGS --xla_dump_to=runs/llama8b_pp2.hlo --xla_dump_hlo_as_text" \
+  python -m jax_titan.trainer.train --model=llama3.1-8b --num_stages=2 --microbatches=8 \
+  --microbatch_size=1 --seq_len=2048 --steps=3 --run_dir=runs/llama8b_pp2
+python3 src/jax_titan/observability/gemms.py runs/llama8b_pp2.hlo --run_dir runs/llama8b_pp2 --merge
+```
+
+The top rows of one training step:
+
+```
+19 modules, in one training step: 7448 GEMM launches, 975.2 TFLOP; FLOPs by library: hipBLASLt 68% (4120 launches), Triton 32% (3328 launches)
+  thunk sequence: 96 of 96 fused GEMM kernels by name, 70 library GEMM thunks for 70 library calls (all launched)
+   count  library    dtype             batch       M       N       K  layout    GFLOP  share  pass      source
+     512  Triton     bf16                  -    2048   14336    4096  MK,KN       241  12.6%  fwd       native.py:22 swiglu
+     256  Triton     bf16                  -    2048    4096   14336  MK,KN       241   6.3%  fwd       native.py:22 swiglu
+     256  hipBLASLt  bf16                  -    2048   14336    4096  MK,KN       241   6.3%  remat     native.py:22 swiglu
+     256  hipBLASLt  bf16                  -    2048    4096   14336  MK,NK       241   6.3%  bwd       native.py:22 swiglu
+     256  hipBLASLt  bf16                  -    4096   14336    2048  KM,KN       241   6.3%  bwd       native.py:22 swiglu
+     ...
+     384  hipBLASLt  bf16                  -    2048    6144    4096  MK,KN       103   4.1%  fwd,remat native.py:27 linear
+     512  hipBLASLt  bf16->f32             8    8192    2048     128  MK,NK      34.4   1.8%  fwd,remat native.py:16 attention
+       8  hipBLASLt  bf16->f32             -    2048  128256    4096  MK,KN  2.15e+03   1.8%  fwd       llama.py:257 stage_forward
+```
+
+Each row is one kernel shape, by total FLOPs:
+
+| Column | Meaning |
+|---|---|
+| `count` | Launches per run of the module, or per step with `--run_dir`: the 512 of the top row are 8 microbatches x 32 layers x 2, for the gate and up projections |
+| `library` | hipBLASLt, rocBLAS, Triton, or XLA for a plain `dot` |
+| `dtype` | Operand types and, when it differs, the output's: `bf16->f32` |
+| `batch` | The GEMM's own batch dimension, for a batched GEMM such as attention's 8 KV-head groups; `-` for a plain GEMM, `gN` for a ragged dot over N groups. The training batch is not here: a projection's M is the tokens one GPU processes in a microbatch (1 sequence x 2048 above), and each microbatch is another launch in `count` |
+| `M`, `N`, `K` | As the kernel computes C[M, N] row major; when XLA writes C column major, the operands swap roles |
+| `layout` | Which dimension of each operand is contiguous: `MK` is A[M, K] with K contiguous, `KM` is A stored as [K, M]; `KN` and `NK` likewise for B. `MK,NK` is X times W^T, the backward GEMM for the input gradient |
+| `GFLOP` | 2 x batch x M x N x K for one launch |
+| `pass` | From JAX's op name: `fwd`, `bwd`, or `remat` for a forward op recomputed in the backward pass |
+| `source` | The innermost Python frame of the op |
+
+The library comes from the instruction XLA emitted: hipBLASLt for a
+`__cublas$lt$matmul` custom call, which the executable runs as a
+`kCublasLtMatmul` thunk, and Triton for a `__triton_nested_gemm_fusion` (or the
+older `__triton_gemm`) fusion, which it launches as a kernel of the same name.
+`--sites` lists each GEMM instruction with its configuration, here for the
+stage 1 forward fragment of the first microbatch in the run above:
+
+```bash
+python3 src/jax_titan/observability/gemms.py runs/llama8b_pp2.hlo --run_dir runs/llama8b_pp2 \
+  --module p1_stage1_fwd_call0 --sites
+```
+
+```
+p1_stage1_fwd_call0.train_step (module_899739.p1_stage1_fwd_call0.train_step.gfx950_gpu_after_optimizations.txt), runs 1 time per step
+  8 GEMMs, 113 launches, 17.54 TFLOP per step; FLOPs by library: Triton 75% (80 launches), hipBLASLt 25% (33 launches)
+  thunk sequence: 5 of 5 fused GEMM kernels by name, 3 library GEMM thunks for 3 library calls (all launched)
+   count  kernel                     library          M       N       K  layout pass   config                                                 source
+      16  gemm_fusion_dot.7          Triton        2048   14336    4096  MK,KN  fwd    128x128x64, warps 4, stages 2, grid 1792, LDS 66 KiB   native.py:22 swiglu
+      16  gemm_fusion_dot.6          Triton        2048   14336    4096  MK,KN  fwd    128x128x64, warps 4, stages 2, grid 1792, LDS 66 KiB   native.py:22 swiglu
+      16  gemm_fusion_dot.8          Triton        2048    4096   14336  MK,KN  fwd    128x256x64, warps 8, stages 2, grid 256, LDS 100 KiB   native.py:22 swiglu
+       1  custom-call.1              hipBLASLt     2048  128256    4096  MK,KN  fwd    algorithm 3, workspace 64 MiB                          llama.py:257 stage_forward
+      16  custom-call.0              hipBLASLt     2048    6144    4096  MK,KN  fwd    algorithm 0, workspace 64 MiB                          native.py:27 linear
+      16  gemm_fusion_dot.5          Triton        2048    4096    4096  MK,KN  fwd    256x128x64, warps 8, stages 2, grid 256, LDS 99 KiB    native.py:27 linear
+      16  custom-call.2              hipBLASLt     8192    2048     128  MK,NK  fwd    algorithm 73, alpha 0.08839, workspace 64 MiB          native.py:16 attention
+      16  gemm_fusion_dot.12         Triton         128    8192    2048  KM,NK  fwd    128x256x64, warps 8, stages 3, grid 256, LDS 148 KiB   native.py:16 attention
+```
+
+| Library | Configuration from the HLO |
+|---|---|
+| Triton | `block_m x block_n x block_k` of C[M, N] row major, `num_warps` and `num_stages`, and any other tiling setting off its default (`mfma_size`, `waves_per_eu`, `split_k` for `__triton_gemm`). From `thunk_sequence.txt`: the grid, ceil(M / block_m) x ceil(N / block_n) x batch workgroups, and the LDS bytes |
+| hipBLASLt, rocBLAS | `algorithm`, the index of the chosen candidate among those hipBLASLt's heuristic returns for the problem, which the autotuner timed (0 is hipBLASLt's first pick); the workspace; and when set, the epilogue (bias, activation), `alpha` (the attention's 1/sqrt(128) above), `beta`, and `scale_mode` for FP8 and MX |
+
+The HLO does not name the hipBLASLt kernel the algorithm index selects; the
+kernel names appear in a profiler trace of the run. `--module
+REGEX` keeps some modules; `--csv` and `--json` write every GEMM with its
+operand shapes, call stack, configuration and launch dimensions. Custom calls
+it does not read as GEMMs, such as the operator providers' kernels
+(`--ops=linear=aiter`), are listed with their launches.
+
+The step's GEMMs agree with the trainer's FLOPs: 263.5 TFLOP forward, 527.0
+backward and 184.7 recomputed. Forward and backward come to 790.5 TFLOP, 26.3
+above the trainer's model FLOPs (764.2), which count causal attention at half:
+the native attention computes all of QK^T and PV, 52.8 TFLOP of GEMMs, half of
+which is 26.4. The trainer's hardware FLOPs (1001.6) assume the whole forward
+is recomputed; XLA recomputed 70% of it.
 
 ## The metrics
 

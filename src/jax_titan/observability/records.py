@@ -9,7 +9,8 @@ Event records hold `event` and `time`:
            pid, process index and count, devices, device kind and the args
   state    `seconds` to initialize or restore the training state, and
            `restored_step` (0 when initialized)
-  compile  `lower_s` and `compile_s`
+  compile  `lower_s`, `compile_s`, and `programs`: each compiled program a step
+           runs (by HLO module name) and its calls per step
   data     `seconds` to open the data
   memory   `peak_hbm_gib` per device after the first step
   eval     `step` (updates done), validation `loss` and `seconds`

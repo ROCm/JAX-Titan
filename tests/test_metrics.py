@@ -251,6 +251,11 @@ def test_trainer_run_dir(tmp_path):
   log = records.read(run / "train.jsonl")
   names = [r.get("event", "step") for r in log]
   assert names[:5] == ["start", "layout", "state", "compile", "data"]
+  # Each stage's forward runs once per microbatch; a backward fragment shared by
+  # several microbatches runs once for each of them.
+  programs = records.events(log, "compile")[0]["programs"]
+  assert all(name.endswith(".train_step") for name in programs)
+  assert max(programs.values()) > 1 and sum(programs.values()) > len(programs)
   assert names[-2:] == ["checkpoint_closed", "end"] and log[-1]["status"] == "completed"
   assert names.count("step") == 6 and names.count("eval") == 2 and names.count("save") == 2
   assert all("time" in r and "tokens_per_s_per_gpu" in r for r in records.steps(log))
