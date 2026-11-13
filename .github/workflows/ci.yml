@@ -36,4 +36,4 @@ jobs:
       - name: Show installed versions
         run: python -m pip freeze
       - name: Run tests
-        run: python -m pytest tests/test_collectives.py
+        run: python -m pytest tests/test_agent_skills.py
