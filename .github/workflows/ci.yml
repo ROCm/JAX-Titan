@@ -40,7 +40,7 @@ jobs:
 
   gpu-smoke:
     name: GPU smoke test (MI350)
-    runs-on: linux-jax-titan-mi350-1
+    runs-on: amd-do-linux.jax-titan.gpu.gfx950.1
     # A pull request from a fork never runs on a self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 30
