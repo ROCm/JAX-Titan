@@ -132,6 +132,8 @@ FLUX.1-dev's timestep embedding at the pinned commit.
 
 [docs/getting_started.md](docs/getting_started.md) covers the TheRock
 container, the from-source JAX build and the Python environment.
+[docs/tools.md](docs/tools.md) lists the scripts, command-line tools and agent
+skills by the stage of a training job they serve.
 [docs/amd-jax-train-runbook](docs/amd-jax-train-runbook) covers running
 JAX-Titan on AMD's SPUR cluster.
 

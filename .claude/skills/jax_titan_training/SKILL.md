@@ -190,6 +190,8 @@ Rules:
 
 - [reference.md](reference.md): run naming, the per-run checklist and the
   notes format
+- `docs/tools.md`: every script and command-line tool, by the stage of a
+  training job
 - `docs/pipelines.md`: schedules, layouts, checkpoints and measured results
 - `docs/planning.md`: training budgets (time, GPU-hours, energy, memory) per
   GPU type

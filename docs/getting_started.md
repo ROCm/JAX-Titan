@@ -254,6 +254,9 @@ downloads WikiText-103 and writes Llama 3 token ids to `${JAX_TITAN_ROOT}/data`.
 The tokenizer comes from a sibling MaxText checkout (override with
 `JAX_TITAN_LLAMA3_TOKENIZER`).
 
+[tools.md](tools.md) lists every script, command-line tool and agent skill by
+the stage of a training job it serves.
+
 ## Results
 
 [recipes/maxtext-llama3.1-8b.md](recipes/maxtext-llama3.1-8b.md) runs
