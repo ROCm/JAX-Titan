@@ -439,6 +439,14 @@ def _mkdir(*parts):
   return path
 
 
+def step_programs(lowered) -> dict[str, int]:
+  """The compiled programs one step runs, by HLO module name, and how often:
+  each MPMD fragment once per call in the IFRT program, or the one jit program."""
+  from jax_titan.observability import gemms  # pylint: disable=g-import-not-at-top
+
+  return gemms.program_calls(lowered.as_text())
+
+
 def _enable_rccl_inspector(run_dir: str):
   """Loads the RCCL Inspector into RCCL, which reads these before JAX starts it."""
   plugin = os.environ.get("JAX_TITAN_RCCL_INSPECTOR") or str(
@@ -588,7 +596,7 @@ def main(argv=None):
   compiled = lowered.compile()
   t2 = time.time()
   print(f"lowered in {t1 - t0:.1f}s, compiled in {t2 - t1:.1f}s", flush=True)
-  log.event("compile", lower_s=t1 - t0, compile_s=t2 - t1)
+  log.event("compile", lower_s=t1 - t0, compile_s=t2 - t1, programs=step_programs(lowered))
   selected = [dataclasses.asdict(s) for s in ops.selections()]
   print("ops:\n  " + ops.summary().replace("\n", "\n  "), flush=True)
 

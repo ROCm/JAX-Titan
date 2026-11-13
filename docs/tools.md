@@ -22,7 +22,8 @@ links to the page that documents it.
    job that also starts the container and builds what is missing.
 5. **Clean up.** `scripts/cleanup_after_train.sh` shows what it would stop and
    remove; `--yes` applies it.
-6. **Read the run.** `observability.summarize`, `profile`, `plot` and `ettr`.
+6. **Read the run.** `observability.summarize`, `profile`, `plot` and `ettr`;
+   `observability.gemms` lists the GEMMs of a run dumped with `--xla_dump_to`.
    A measured run makes the next plan more accurate through
    `planning.budget --from_run` and `planning.step --calibrate`.
 
@@ -55,7 +56,7 @@ processes, so read the dry run's list before `--yes`.
 
 Run each with `python -m jax_titan.<module>`, or `python <path>` for the
 examples. The planners, and the tools that read a finished run (`summarize`,
-`profile`, `plot`, `ettr`, `collectives`, `perfdb`), need no GPU.
+`profile`, `plot`, `ettr`, `collectives`, `perfdb`, `gemms`), need no GPU.
 
 ### Correctness
 
@@ -76,6 +77,7 @@ examples. The planners, and the tools that read a finished run (`summarize`,
 | `observability.plot RUN` | Figures of MFU, step time, loss, gradient norm and power over the run |
 | `observability.ettr RUN` | ETTR, and the checkpoint interval and ETTR projected to more nodes |
 | `observability.collectives DIR` | RCCL Inspector completion times by operation and message size |
+| `observability.gemms DUMP` | Every GEMM the compiled program runs, from an XLA HLO dump of any program: M, N, K, batch, dtypes, operand layouts, library (hipBLASLt, rocBLAS, Triton) and kernel configuration, with launches per run, or per training step with `--run_dir`. Standard library only: `python3 src/jax_titan/observability/gemms.py DUMP` runs without JAX or an install ([metrics.md](metrics.md#gemms-in-the-compiled-program)) |
 | `observability.power OUT.jsonl` | GPU power, energy, clocks and throttling, sampled beside any job |
 | `observability.env OUT.json` | What a run ran on: packages, commits, flags, GPUs and the rank map |
 | `observability.ceilings OUT.json` | The GEMM and HBM rates XLA reaches on one GPU, for MFU against an attainable peak (needs a GPU) |
